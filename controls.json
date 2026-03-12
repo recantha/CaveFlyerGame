@@ -1,0 +1,7 @@
+{
+  "thrust": "K_RSHIFT",
+  "rotate_left": "K_a",
+  "rotate_right": "K_s",
+  "fire": "K_RETURN",
+  "tractor": "K_SPACE"
+}
