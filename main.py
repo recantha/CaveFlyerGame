@@ -31,73 +31,70 @@ from settings import (
     ORBIT_SCROLL_SPACE,
     ORBIT_ESCAPE_MARGIN,
     REACTOR_ESCAPE_TIME,
+    SHIP_NOSE_LEN_MULT,
+    SHIP_BASE_BACK_MULT,
+    SHIP_BASE_HALF_MULT,
+    BULLET_SPAWN_OFFSET,
+    TRACTOR_BEAM_LENGTH,
+    TRACTOR_BEAM_HALF_WIDTH,
+    TRACTOR_PULL_SPEED,
+    TRACTOR_TARGET_OFFSET,
+    ORB_PULSE_DURATION,
+    ORB_PULSE_FAST_RATE,
+    ORB_PULSE_SLOW_RATE,
+    ORB_FALL_MAX_SPEED,
+    ORB_FALL_DAMPING,
+    THRUST_PARTICLES_PER_FRAME,
+    THRUST_SPREAD_DEGREES,
+    THRUST_SPEED_MIN,
+    THRUST_SPEED_MAX,
+    THRUST_PARTICLE_LIFE,
+    TURRET_HIT_POINTS,
+    TURRET_RADIUS,
+    TURRET_EXPLOSION_PARTICLES,
+    TURRET_SPARK_SPEED_MIN,
+    TURRET_SPARK_SPEED_MAX,
+    TURRET_SPARK_LIFE_MIN,
+    TURRET_SPARK_LIFE_MAX,
+    TANK_RADIUS,
+    TANK_HALF_WIDTH,
+    TANK_HALF_HEIGHT,
+    TANK_SPEED,
+    TANK_FIRE_RANGE,
+    TANK_FIRE_COOLDOWN,
+    TANK_BULLET_SPEED,
+    TANKS_PER_LEVEL_MAX,
+    ROCK_GRAVITY_SCALE,
+    ROCK_AIR_DAMPING,
+    ROCK_GROUND_DAMPING,
+    ROCK_SLIDE_ACCEL,
+    ROCK_MAX_FALL_SPEED,
+    ROCK_TERRAIN_FRICTION,
+    ROCK_STOP_SPEED,
+    ROCK_PILE_MAX_COUNT,
+    FUEL_PARTICLE_VALUE,
+    FUEL_PARTICLE_SPAWN_INTERVAL,
+    FUEL_PARTICLE_PULL_SPEED,
+    FUEL_PARTICLE_FADE_TIME,
+    REACTOR_HIT_POINTS,
+    REACTOR_EXPLOSION_PARTICLES,
+    REACTOR_HIT_SPARKS,
+    REACTOR_DEBRIS_PARTICLES,
+    LEVEL_SELF_DESTRUCT_DURATION,
+    LEVEL_DESTRUCT_SPARK_BURST,
+    LEVEL_DESTRUCT_FLAME_BURST,
+    LEVEL_DESTRUCT_SPARKS_PER_FRAME,
+    LEVEL_DESTRUCT_FLAMES_PER_FRAME,
+    SHIP_DESTRUCTION_DURATION,
+    SHIP_DESTRUCTION_SPARKS,
+    SHIP_DESTRUCTION_FLAMES,
+    SHIP_DEBRIS_PARTICLES,
+    SHIP_BOUNCE_FLASH_DURATION,
+    SHIP_BOUNCE_RESTITUTION,
+    SHIP_TRANSPORTER_MATERIALIZE_DURATION,
+    SHIP_TRANSPORTER_DEMATERIALIZE_DURATION,
+    SHIP_TRANSPORTER_BEAM_WIDTH,
 )
-
-SHIP_NOSE_LEN_MULT = 1.45
-SHIP_BASE_BACK_MULT = 0.80
-SHIP_BASE_HALF_MULT = 1.05
-BULLET_SPAWN_OFFSET = 6.0
-TRACTOR_BEAM_LENGTH = 270.0
-TRACTOR_BEAM_HALF_WIDTH = 54.0
-TRACTOR_PULL_SPEED = 110.0
-TRACTOR_TARGET_OFFSET = 10.0
-ORB_PULSE_DURATION = 1.25
-ORB_PULSE_FAST_RATE = 4.0
-ORB_PULSE_SLOW_RATE = 1.3
-ROCK_GRAVITY_SCALE = 0.55
-ROCK_AIR_DAMPING = 0.995
-ROCK_GROUND_DAMPING = 0.62
-ROCK_SLIDE_ACCEL = 42.0
-ROCK_MAX_FALL_SPEED = 220.0
-ROCK_TERRAIN_FRICTION = 0.72
-ROCK_STOP_SPEED = 7.0
-FUEL_PARTICLE_VALUE = 8.0
-FUEL_PARTICLE_SPAWN_INTERVAL = 0.055
-FUEL_PARTICLE_PULL_SPEED = 175.0
-FUEL_PARTICLE_FADE_TIME = 0.45
-SHIP_BOUNCE_FLASH_DURATION = 0.32
-SHIP_BOUNCE_RESTITUTION = 0.62
-ORB_FALL_MAX_SPEED = 260.0
-ORB_FALL_DAMPING = 0.985
-
-THRUST_PARTICLES_PER_FRAME = 3
-THRUST_SPREAD_DEGREES = 12.0
-THRUST_SPEED_MIN = 220.0
-THRUST_SPEED_MAX = 300.0
-THRUST_PARTICLE_LIFE = 0.20
-
-TURRET_HIT_POINTS = 3
-TURRET_RADIUS = 14
-TURRET_EXPLOSION_PARTICLES = 44
-TURRET_SPARK_SPEED_MIN = 90.0
-TURRET_SPARK_SPEED_MAX = 280.0
-TURRET_SPARK_LIFE_MIN = 0.25
-TURRET_SPARK_LIFE_MAX = 0.55
-
-TANK_RADIUS = 22
-TANK_HALF_WIDTH = 28
-TANK_HALF_HEIGHT = 16
-TANK_SPEED = 42.0
-TANK_FIRE_RANGE = 320.0
-TANK_FIRE_COOLDOWN = 2.2
-TANK_BULLET_SPEED = 260.0
-TANKS_PER_LEVEL_MAX = 4
-
-REACTOR_HIT_POINTS = 10
-REACTOR_EXPLOSION_PARTICLES = 90
-REACTOR_HIT_SPARKS = 14
-REACTOR_DEBRIS_PARTICLES = 42
-
-LEVEL_SELF_DESTRUCT_DURATION = 2.8
-LEVEL_DESTRUCT_SPARK_BURST = 220
-LEVEL_DESTRUCT_FLAME_BURST = 180
-LEVEL_DESTRUCT_SPARKS_PER_FRAME = 10
-LEVEL_DESTRUCT_FLAMES_PER_FRAME = 12
-SHIP_DESTRUCTION_DURATION = 1.1
-SHIP_DESTRUCTION_SPARKS = 30
-SHIP_DESTRUCTION_FLAMES = 18
-SHIP_DEBRIS_PARTICLES = 12
-
 
 # ------------------------------------------------------------
 # Helper functions
@@ -316,12 +313,7 @@ class Bullet:
         glow_colour = (255, 170, 80) if self.from_player else (255, 110, 90)
         draw_glow_circle(screen, glow_colour, center, self.radius, self.radius + 7, 80)
         draw_glow_circle(screen, glow_colour, center, self.radius, self.radius + 3, 130)
-        pygame.draw.circle(
-            screen,
-            (255, 220, 120),
-            center,
-            self.radius,
-        )
+        pygame.draw.circle(screen, (255, 220, 120), center, self.radius)
 
 
 class ThrustParticle:
@@ -337,7 +329,6 @@ class ThrustParticle:
         self.alive = True
 
     def update(self, dt):
-        # Light velocity decay so particles feel like tiny exhaust debris.
         self.vx *= 0.96
         self.vy *= 0.96
         self.x += self.vx * dt
@@ -353,7 +344,6 @@ class ThrustParticle:
         t = max(0.0, min(1.0, self.life / self.max_life))
         radius = max(1, int(self.size * t + 0.5))
         shade = int(self.brightness * t)
-        # Cool grey-white tones look like particles rather than flames.
         colour = (shade, shade, min(255, shade + 15))
         pygame.draw.circle(screen, colour, (int(self.x + offset_x - camera_x), int(self.y - camera_y)), radius)
 
@@ -475,26 +465,61 @@ class Ship:
         self.orb_pulse_time = 0.0
         self.orb_pulse_phase = 0.0
         self.bounce_flash_time = 0.0
+        self.transporter_state = None
+        self.transporter_time = 0.0
+        self.transporter_duration = 0.0
+
+    def start_materialize(self):
+        self.transporter_state = 'materialize'
+        self.transporter_duration = SHIP_TRANSPORTER_MATERIALIZE_DURATION
+        self.transporter_time = self.transporter_duration
+        self.vx = 0.0
+        self.vy = 0.0
+        self.thrusting = False
+        self.tractor_active = False
+
+    def start_dematerialize(self):
+        self.transporter_state = 'dematerialize'
+        self.transporter_duration = SHIP_TRANSPORTER_DEMATERIALIZE_DURATION
+        self.transporter_time = self.transporter_duration
+        self.vx = 0.0
+        self.vy = 0.0
+        self.thrusting = False
+        self.tractor_active = False
+
+    def is_transporting(self):
+        return self.transporter_state is not None and self.transporter_time > 0.0
+
+    def is_operational(self):
+        return self.alive and not self.is_transporting()
+
+    def update_transporter(self, dt):
+        if not self.is_transporting():
+            return False
+        self.transporter_time = max(0.0, self.transporter_time - dt)
+        if self.transporter_time > 0.0:
+            return False
+        self.transporter_state = None
+        self.transporter_duration = 0.0
+        return True
 
     def update(self, dt, keys, controls, level):
         self.thrusting = False
-        self.tractor_active = keys[controls["tractor"]]
+        self.tractor_active = keys[controls['tractor']]
         self.orb_pulse_time = max(0.0, self.orb_pulse_time - dt)
         self.bounce_flash_time = max(0.0, self.bounce_flash_time - dt)
         if self.has_orb:
             pulse_rate = ORB_PULSE_FAST_RATE if self.orb_pulse_time > 0.0 else ORB_PULSE_SLOW_RATE
             self.orb_pulse_phase = (self.orb_pulse_phase + dt * pulse_rate) % 1.0
 
-        if keys[controls["rotate_left"]]:
+        if keys[controls['rotate_left']]:
             self.angle -= SHIP_ROTATION_SPEED * dt
-        if keys[controls["rotate_right"]]:
+        if keys[controls['rotate_right']]:
             self.angle += SHIP_ROTATION_SPEED * dt
 
-        # Apply level-specific gravity.
         self.vy += level.gravity * dt
 
-        # Thrust pushes the ship in the direction it is facing.
-        if keys[controls["thrust"]] and self.fuel > 0:
+        if keys[controls['thrust']] and self.fuel > 0:
             angle_rad = math.radians(self.angle)
             thrust_x = math.cos(angle_rad) * SHIP_THRUST
             thrust_y = math.sin(angle_rad) * SHIP_THRUST
@@ -512,7 +537,6 @@ class Ship:
         self.y += self.vy * dt
         self.x = level.wrap_x(self.x, self.radius)
 
-        # Collision with cave walls.
         for line in level.collision_lines():
             if line_circle_collision(line, self.x, self.y, self.radius):
                 if SHIP_BOUNCES_INSTEAD_OF_DYING:
@@ -618,11 +642,84 @@ class Ship:
             (base_left[0] + offset_x - camera_x, base_left[1] - camera_y),
             (base_right[0] + offset_x - camera_x, base_right[1] - camera_y),
         ]
+        center = (int(self.x + offset_x - camera_x), int(self.y - camera_y))
+
+        transport_phase = None
+        linear_phase = 1.0
+        if self.is_transporting():
+            if self.transporter_duration > 0.0:
+                linear_phase = 1.0 - (self.transporter_time / self.transporter_duration)
+            linear_phase = max(0.0, min(1.0, linear_phase))
+            eased_phase = linear_phase * linear_phase * (3.0 - 2.0 * linear_phase)
+            if self.transporter_state == 'dematerialize':
+                eased_phase = 1.0 - eased_phase
+            transport_phase = eased_phase
+
+            min_y = min(point[1] for point in points)
+            max_y = max(point[1] for point in points)
+            height = max(1, int(math.ceil(max_y - min_y)))
+            visible_height = max(1, int(height * max(0.04, transport_phase)))
+            clip_top = int(max_y - visible_height)
+            clip_rect = pygame.Rect(0, clip_top, SCREEN_WIDTH, max(1, int(max_y - clip_top + 3)))
+
+            for glow_index, inflate in enumerate((16, 10, 5)):
+                glow_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                alpha = int((70 - glow_index * 16) * max(0.2, transport_phase))
+                glow_points = []
+                for px, py in points:
+                    dx = px - center[0]
+                    dy = py - center[1]
+                    dist = max(1.0, math.hypot(dx, dy))
+                    scale = 1.0 + (inflate / dist) * (1.0 - transport_phase + 0.2)
+                    glow_points.append((center[0] + dx * scale, center[1] + dy * scale))
+                pygame.draw.polygon(glow_surface, (150, 235, 255, alpha), glow_points)
+                screen.blit(glow_surface, (0, 0))
+
+            mote_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            for idx in range(14):
+                seed = idx * 0.71
+                travel = ((linear_phase * 1.4) + seed) % 1.0
+                if self.transporter_state == 'dematerialize':
+                    travel = 1.0 - travel
+                horizontal = math.sin(seed * 5.1 + linear_phase * math.tau * 1.3) * (self.radius + 12)
+                particle_x = center[0] + horizontal
+                particle_y = center[1] + self.radius + 30 - travel * (self.radius * 5.5)
+                radius = 2 + (idx % 2)
+                glow_alpha = int(90 + 110 * max(0.25, transport_phase))
+                colour = (160, 240, 255, glow_alpha) if idx % 3 else (255, 205, 205, int(glow_alpha * 0.85))
+                pygame.draw.circle(mote_surface, colour, (int(particle_x), int(particle_y)), radius + 2)
+                core = (220, 250, 255) if idx % 3 else (255, 235, 235)
+                pygame.draw.circle(mote_surface, core, (int(particle_x), int(particle_y)), radius)
+            screen.blit(mote_surface, (0, 0))
+
+            ship_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.polygon(ship_surface, (235, 240, 255, int(255 * max(0.1, transport_phase))), points)
+            ship_surface.set_clip(clip_rect)
+            scan_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            for line_y in range(int(max_y), clip_top - 1, -2):
+                glow_alpha = int(100 + 135 * transport_phase)
+                core_alpha = int(150 + 105 * transport_phase)
+                glow_colour = (150, 240, 255, glow_alpha)
+                core_colour = (230, 248, 255, core_alpha)
+                if ((line_y // 2) % 4) == 0:
+                    glow_colour = (255, 185, 185, int(glow_alpha * 0.75))
+                    core_colour = (255, 228, 228, int(core_alpha * 0.8))
+                pygame.draw.line(scan_surface, glow_colour, (center[0] - self.radius - 12, line_y), (center[0] + self.radius + 12, line_y), 4)
+                pygame.draw.line(scan_surface, core_colour, (center[0] - self.radius - 8, line_y), (center[0] + self.radius + 8, line_y), 2)
+            ship_surface.blit(scan_surface, (0, 0))
+            ship_surface.set_clip(None)
+            screen.blit(ship_surface, (0, 0))
+
+            if linear_phase > 0.82 and self.transporter_state == 'materialize':
+                flash = (linear_phase - 0.82) / 0.18
+                flash_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                pygame.draw.polygon(flash_surface, (255, 255, 255, int(110 * flash)), points)
+                screen.blit(flash_surface, (0, 0))
+
         if self.has_orb:
             pulse_strength = 1.0 if self.orb_pulse_time > 0.0 else 0.45
             pulse_wave = 0.55 + 0.45 * math.sin(self.orb_pulse_phase * math.tau)
             glow_radius = int(self.radius + 12 + (10 if self.orb_pulse_time > 0.0 else 6) * pulse_wave)
-            center = (int(self.x + offset_x - camera_x), int(self.y - camera_y))
             draw_glow_circle(
                 screen,
                 (255, 218, 92),
@@ -638,13 +735,29 @@ class Ship:
                 points,
             )
             screen.blit(pulse_surface, (0, 0))
-        pygame.draw.polygon(screen, (235, 240, 255), points)
+
+        fill_colour = (235, 240, 255)
+        if self.is_transporting():
+            min_y = min(point[1] for point in points)
+            max_y = max(point[1] for point in points)
+            height = max(1, int(math.ceil(max_y - min_y)))
+            visible_height = max(1, int(height * max(0.04, transport_phase)))
+            clip_top = int(max_y - visible_height)
+            temp_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.polygon(temp_surface, (*fill_colour, int(255 * max(0.08, transport_phase))), points)
+            temp_surface.set_clip(pygame.Rect(0, clip_top, SCREEN_WIDTH, max(1, int(max_y - clip_top + 3))))
+            screen.blit(temp_surface, (0, 0))
+            temp_surface.set_clip(None)
+        else:
+            pygame.draw.polygon(screen, fill_colour, points)
+
         if self.bounce_flash_time > 0.0:
             flash_phase = int((SHIP_BOUNCE_FLASH_DURATION - self.bounce_flash_time) * 24.0) % 2
             flash_colour = (90, 190, 255) if flash_phase == 0 else (255, 90, 90)
             flash_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             pygame.draw.polygon(flash_surface, (*flash_colour, 110), points)
             screen.blit(flash_surface, (0, 0))
+
         outline_colour = (110, 170, 255)
         if self.bounce_flash_time > 0.0:
             flash_phase = int((SHIP_BOUNCE_FLASH_DURATION - self.bounce_flash_time) * 24.0) % 2
@@ -660,7 +773,19 @@ class Ship:
         if self.bounce_flash_time > 0.0:
             flash_phase = int((SHIP_BOUNCE_FLASH_DURATION - self.bounce_flash_time) * 24.0) % 2
             outline_colour = (90, 190, 255) if flash_phase == 0 else (255, 90, 90)
-        pygame.draw.polygon(screen, outline_colour, points, 2)
+        if self.is_transporting():
+            min_y = min(point[1] for point in points)
+            max_y = max(point[1] for point in points)
+            height = max(1, int(math.ceil(max_y - min_y)))
+            visible_height = max(1, int(height * max(0.04, transport_phase)))
+            clip_top = int(max_y - visible_height)
+            temp_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.polygon(temp_surface, (*outline_colour, int(255 * max(0.12, transport_phase))), points, 2)
+            temp_surface.set_clip(pygame.Rect(0, clip_top, SCREEN_WIDTH, max(1, int(max_y - clip_top + 3))))
+            screen.blit(temp_surface, (0, 0))
+            temp_surface.set_clip(None)
+        else:
+            pygame.draw.polygon(screen, outline_colour, points, 2)
 
     def draw_tractor_beam(self, screen, camera_x=0.0, camera_y=0.0, level=None):
         if not self.alive or not self.tractor_active:
@@ -1223,10 +1348,10 @@ class Level:
         if reactor_data:
             self.reactor = Reactor(reactor_data["x"], reactor_data["y"], sprites["reactor"])
 
+        self.snap_objects_to_flat_surfaces()
         self.rocks = self.build_rocks(level_data)
         self.rocks_unlocked = False
         self.tanks = self.build_tanks()
-        self.snap_objects_to_flat_surfaces()
         self.settle_rocks()
         self.terrain_surface = self.build_terrain_surface()
 
@@ -1237,7 +1362,7 @@ class Level:
         ]
 
         for pile in level_data.get("rock_piles", []):
-            count = pile["count"]
+            count = min(pile["count"], ROCK_PILE_MAX_COUNT)
             diameter = pile.get("diameter", 20)
             spacing = diameter * 0.88
             row_step = diameter * 0.82
@@ -1258,34 +1383,34 @@ class Level:
                     col_offset = (col - (row_count - 1) * 0.5) * spacing
                     rock_x = origin_x + col_offset + x_shift + rng.uniform(-1.0, 1.0)
                     rock_y = row_y + rng.uniform(-1.0, 1.0)
-                    rocks.append(Rock(rock_x, rock_y, diameter))
+                    candidate = Rock(rock_x, rock_y, diameter)
+                    if self.static_position_conflicts(candidate, padding=8.0):
+                        continue
+                    rocks.append(candidate)
                     placed += 1
                 row += 1
 
         return rocks
 
     def snap_objects_to_flat_surfaces(self):
-        """Place objects on horizontal terrain instead of letting them float."""
-        horizontal_lines = []
-        for line in self.base_cave_lines:
-            (ax, ay), (bx, by) = line
-            if abs(ay - by) < 0.01:
-                horizontal_lines.append(line)
-
-        if not horizontal_lines:
-            return
-
-        for turret in self.turrets:
-            self.snap_object_to_floor(turret, turret.sprite)
-
-        for pod in self.fuel_pods:
-            self.snap_object_to_floor(pod, pod.sprite)
-
-        if self.orb:
-            self.snap_object_to_floor(self.orb, self.orb.sprite)
+        """Place major objects on horizontal terrain and avoid overlaps."""
+        placed = []
 
         if self.reactor:
-            self.snap_object_to_floor(self.reactor, self.reactor.sprite)
+            self.snap_object_to_floor(self.reactor, self.reactor.sprite, placed)
+            placed.append(self.reactor)
+
+        for turret in self.turrets:
+            self.snap_object_to_floor(turret, turret.sprite, placed)
+            placed.append(turret)
+
+        for pod in self.fuel_pods:
+            self.snap_object_to_floor(pod, pod.sprite, placed)
+            placed.append(pod)
+
+        if self.orb:
+            self.snap_object_to_floor(self.orb, self.orb.sprite, placed)
+            placed.append(self.orb)
 
     def build_tanks(self):
         horizontal_lines = []
@@ -1335,13 +1460,39 @@ class Level:
         for pod in self.fuel_pods:
             if math.hypot(pod.x - obj.x, pod.y - obj.y) < 50:
                 return True
+        if self.orb and math.hypot(self.orb.x - obj.x, self.orb.y - obj.y) < 60:
+            return True
+        for rock in self.rocks:
+            if math.hypot(rock.x - obj.x, rock.y - obj.y) < 44:
+                return True
         return False
 
-    def snap_object_to_floor(self, obj, sprite):
+    def static_position_conflicts(self, obj, padding=0.0):
+        candidates = []
+        if self.reactor:
+            candidates.append(self.reactor)
+        candidates.extend(self.turrets)
+        candidates.extend(self.fuel_pods)
+        if self.orb:
+            candidates.append(self.orb)
+
+        for other in candidates:
+            if other is obj:
+                continue
+            dx = self.wrapped_dx(other.x, obj.x)
+            min_gap = getattr(other, "radius", 20.0) + getattr(obj, "radius", 20.0) + padding
+            if math.hypot(dx, other.y - obj.y) < min_gap:
+                return True
+        return False
+
+    def snap_object_to_floor(self, obj, sprite, occupied=None):
         half_w = sprite.get_width() * 0.5
         half_h = sprite.get_height() * 0.5
         best = None
         best_dist = float("inf")
+        fallback = None
+        fallback_dist = float("inf")
+        occupied = occupied or []
 
         for line in self.base_cave_lines:
             (ax, ay), (bx, by) = line
@@ -1356,12 +1507,29 @@ class Level:
             cand_x = max(seg_min_x + half_w, min(seg_max_x - half_w, obj.x))
             cand_y = ay - half_h
             dist = math.hypot(cand_x - obj.x, cand_y - obj.y)
+            if dist < fallback_dist:
+                fallback_dist = dist
+                fallback = (cand_x, cand_y)
+            if self.placement_overlaps(cand_x, cand_y, obj, occupied):
+                continue
             if dist < best_dist:
                 best_dist = dist
                 best = (cand_x, cand_y)
 
+        if best is None:
+            best = fallback
+
         if best is not None:
             obj.x, obj.y = best
+
+    def placement_overlaps(self, cand_x, cand_y, obj, occupied):
+        obj_radius = getattr(obj, "radius", 20.0)
+        for other in occupied:
+            dx = self.wrapped_dx(other.x, cand_x)
+            other_radius = getattr(other, "radius", 20.0)
+            if math.hypot(dx, other.y - cand_y) < (obj_radius + other_radius + 10.0):
+                return True
+        return False
 
     def floor_y_beneath(self, x, current_y, radius):
         best_y = None
@@ -1688,6 +1856,7 @@ class Game:
         self.level_destroyed = False
         self.level_destruction_time = 0.0
         self.pending_next_level_after_destruction = False
+        self.pending_orbit_exit_action = None
         self.game_won = False
         self.lives = 3
         self.running = True
@@ -1710,6 +1879,8 @@ class Game:
         self.level_destroyed = False
         self.level_destruction_time = 0.0
         self.pending_next_level_after_destruction = False
+        self.pending_orbit_exit_action = None
+        self.ship.start_materialize()
         self.camera_x, self.camera_y = self.level.camera_for(self.ship.x, self.ship.y)
 
     def advance_to_next_level(self):
@@ -1725,10 +1896,20 @@ class Game:
         self.ship = Ship(*self.level.ship_start, self.sprites["ship"])
         if self.level.orb and self.level.orb.collected:
             self.ship.has_orb = True
+        self.ship.start_materialize()
         self.bullets.clear()
         self.thrust_particles.clear()
         self.fuel_transfer_particles.clear()
         self.ship_destruction_time = 0.0
+
+    def begin_orbit_exit(self, action):
+        if not self.ship.alive or self.ship.is_transporting():
+            return
+        self.pending_orbit_exit_action = action
+        self.ship.start_dematerialize()
+        self.bullets.clear()
+        self.thrust_particles.clear()
+        self.fuel_transfer_particles.clear()
 
     def spawn_turret_explosion(self, x, y):
         for _ in range(TURRET_EXPLOSION_PARTICLES):
@@ -1929,7 +2110,7 @@ class Game:
                     if self.game_won:
                         continue
 
-                    if self.ship.alive and not self.level_destroyed:
+                    if self.ship.is_operational() and not self.level_destroyed:
                         angle = math.radians(self.ship.angle)
                         bullet_x, bullet_y = self.ship.get_nose_position(offset=BULLET_SPAWN_OFFSET)
                         self.bullets.append(
@@ -1949,8 +2130,18 @@ class Game:
 
         self.level.update(dt)
 
+        if self.ship and self.ship.alive and self.ship.update_transporter(dt):
+            if self.pending_orbit_exit_action == "advance":
+                self.pending_orbit_exit_action = None
+                self.advance_to_next_level()
+                return
+            if self.pending_orbit_exit_action == "respawn":
+                self.pending_orbit_exit_action = None
+                self.respawn_after_orbit_breach()
+                return
+
         keys = pygame.key.get_pressed()
-        if self.ship.alive and not self.level_destroyed:
+        if self.ship.is_operational() and not self.level_destroyed:
             was_alive = self.ship.alive
             self.ship.update(dt, keys, self.controls, self.level)
 
@@ -1991,7 +2182,7 @@ class Game:
                 dx = self.level.wrapped_dx(reactor.x, self.ship.x)
                 self.ship_collision_response(dx, self.ship.y - reactor.y)
 
-        if self.ship.alive and self.ship.thrusting and not self.level_destroyed:
+        if self.ship.is_operational() and self.ship.thrusting and not self.level_destroyed:
             base_left, base_right = self.ship.get_base_points()
             rear_angle = math.radians(self.ship.angle + 180.0)
             spread = math.radians(THRUST_SPREAD_DEGREES)
@@ -2011,7 +2202,7 @@ class Game:
                     )
                 )
 
-        if self.ship.alive and not self.level_destroyed:
+        if self.ship.is_operational() and not self.level_destroyed:
             for turret in self.level.turrets:
                 turret.update(dt, self.ship, self.bullets, self.level)
 
@@ -2033,7 +2224,7 @@ class Game:
                 if not bullet.alive:
                     continue
 
-                if BULLETS_DESTROY_SHIP and not bullet.from_player and self.ship.alive:
+                if BULLETS_DESTROY_SHIP and not bullet.from_player and self.ship.is_operational():
                     if math.hypot(self.level.wrapped_dx(bullet.x, self.ship.x), self.ship.y - bullet.y) <= (self.ship.radius + bullet.radius):
                         bullet.alive = False
                         self.ship_collision_response(
@@ -2093,17 +2284,16 @@ class Game:
                         self.spawn_reactor_hit_sparks(reactor.x, reactor.y)
 
         if self.escape_timer is not None and not self.level_destroyed and self.level.ship_escaped(self.ship):
-            self.advance_to_next_level()
-            return
+            self.begin_orbit_exit("advance")
+
 
         if (
-            self.ship.alive
+            self.ship.is_operational()
             and not self.level_destroyed
             and self.escape_timer is None
             and self.level.ship_in_orbit(self.ship)
         ):
-            self.respawn_after_orbit_breach()
-            return
+            self.begin_orbit_exit("respawn")
 
         if self.escape_timer is not None and not self.level_destroyed:
             self.escape_timer = max(0.0, self.escape_timer - dt)
