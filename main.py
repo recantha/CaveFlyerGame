@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+from array import array
 import pygame
 
 from settings import (
@@ -91,9 +92,14 @@ from settings import (
     SHIP_DEBRIS_PARTICLES,
     SHIP_BOUNCE_FLASH_DURATION,
     SHIP_BOUNCE_RESTITUTION,
+    FORCE_FIELD_RADIUS,
+    FORCE_FIELD_GLOW_RADIUS,
     SHIP_TRANSPORTER_MATERIALIZE_DURATION,
     SHIP_TRANSPORTER_DEMATERIALIZE_DURATION,
     SHIP_TRANSPORTER_BEAM_WIDTH,
+    STARFIELD_FADE_START,
+    STARFIELD_FADE_DISTANCE,
+    STARFIELD_STAR_COUNT,
 )
 
 # ------------------------------------------------------------
@@ -175,6 +181,124 @@ def load_sprite(path, fallback_size=(32, 32), colour=(255, 255, 255)):
     surface = pygame.Surface(fallback_size, pygame.SRCALPHA)
     pygame.draw.rect(surface, colour, surface.get_rect(), border_radius=6)
     return surface
+
+
+def create_tone_sound(frequencies, duration, volume=0.35, sample_rate=22050, decay=3.0):
+    """Create a short procedural tone so the game has usable sounds without asset files."""
+    if not pygame.mixer.get_init():
+        return None
+
+    sample_count = max(1, int(sample_rate * duration))
+    amplitude = int(32767 * max(0.0, min(1.0, volume)))
+    frequencies = tuple(frequencies)
+    buffer = array("h")
+
+    for i in range(sample_count):
+        t = i / sample_rate
+        envelope = math.exp(-decay * t / max(duration, 0.001))
+        sample = 0.0
+        for freq in frequencies:
+            sample += math.sin(math.tau * freq * t)
+        sample /= max(1, len(frequencies))
+        buffer.append(int(amplitude * sample * envelope))
+
+    return pygame.mixer.Sound(buffer=buffer)
+
+
+def create_noise_sound(duration, volume=0.35, sample_rate=22050, decay=1.5, smoothness=0.82, drive=2.4):
+    """Create filtered noise for hiss or exhaust-like sounds."""
+    if not pygame.mixer.get_init():
+        return None
+
+    sample_count = max(1, int(sample_rate * duration))
+    amplitude = int(32767 * max(0.0, min(1.0, volume)))
+    buffer = array("h")
+    previous = 0.0
+
+    for i in range(sample_count):
+        t = i / sample_rate
+        envelope = math.exp(-decay * t / max(duration, 0.001))
+        white = random.uniform(-1.0, 1.0)
+        previous = previous * smoothness + white * (1.0 - smoothness)
+        high_pass = white - previous
+        sample = max(-1.0, min(1.0, high_pass * drive))
+        buffer.append(int(amplitude * sample * envelope))
+
+    return pygame.mixer.Sound(buffer=buffer)
+
+
+def create_echo_tone_sound(frequencies, duration, volume=0.35, sample_rate=22050, decay=2.5, echoes=None):
+    """Create a bright procedural ping with a simple echo tail."""
+    if not pygame.mixer.get_init():
+        return None
+
+    if echoes is None:
+        echoes = (
+            (0.0, 1.0),
+            (0.12, 0.45),
+            (0.24, 0.22),
+        )
+
+    sample_count = max(1, int(sample_rate * duration))
+    amplitude = int(32767 * max(0.0, min(1.0, volume)))
+    frequencies = tuple(frequencies)
+    buffer = array("h")
+
+    for i in range(sample_count):
+        t = i / sample_rate
+        sample = 0.0
+        for delay, gain in echoes:
+            shifted_t = t - delay
+            if shifted_t < 0.0:
+                continue
+            envelope = math.exp(-decay * shifted_t / max(duration, 0.001))
+            partial = 0.0
+            for freq in frequencies:
+                partial += math.sin(math.tau * freq * shifted_t)
+            partial /= max(1, len(frequencies))
+            sample += partial * envelope * gain
+        sample = max(-1.0, min(1.0, sample))
+        buffer.append(int(amplitude * sample))
+
+    return pygame.mixer.Sound(buffer=buffer)
+
+
+def create_bloop_sound(duration, volume=0.35, sample_rate=22050):
+    """Create a rounded descending bloop for liquid or pop-like UI cues."""
+    if not pygame.mixer.get_init():
+        return None
+
+    sample_count = max(1, int(sample_rate * duration))
+    amplitude = int(32767 * max(0.0, min(1.0, volume)))
+    buffer = array("h")
+
+    for i in range(sample_count):
+        t = i / sample_rate
+        phase = t / max(duration, 0.001)
+        wobble = math.sin(math.tau * (7.8 * t)) * (1.0 - min(1.0, phase) * 0.35)
+        warble = math.sin(math.tau * (14.0 * t) + 0.7) * (1.0 - min(1.0, phase) * 0.6)
+        base_freq = 520.0 - 360.0 * phase + wobble * 32.0 + warble * 12.0
+        overtone = base_freq * 1.92
+        bubble_freq = 230.0 - 125.0 * phase + wobble * 16.0
+        sub_bloop = 118.0 - 52.0 * phase + warble * 6.0
+        envelope = math.exp(-4.1 * phase) * (1.0 - 0.26 * math.sin(math.pi * min(1.0, phase)))
+        sample = (
+            math.sin(math.tau * base_freq * t)
+            + 0.48 * math.sin(math.tau * overtone * t + 0.35)
+            + 0.32 * math.sin(math.tau * bubble_freq * t + 1.1)
+            + 0.18 * math.sin(math.tau * sub_bloop * t + 2.1)
+        )
+        echo_t = t - 0.045
+        if echo_t > 0.0:
+            echo_phase = echo_t / max(duration, 0.001)
+            echo_freq = 365.0 - 210.0 * echo_phase + warble * 8.0
+            sample += 0.54 * math.sin(math.tau * echo_freq * echo_t + 0.4) * math.exp(-5.8 * echo_phase)
+        glorp = math.sin(math.tau * (82.0 + wobble * 7.0) * t + 2.4)
+        sample += 0.18 * glorp * math.exp(-7.0 * phase)
+        sample = max(-1.0, min(1.0, sample * 0.66))
+        buffer.append(int(amplitude * sample * envelope))
+
+    return pygame.mixer.Sound(buffer=buffer)
 
 
 def create_fuel_pod_sprite(size=(38, 54)):
@@ -461,6 +585,7 @@ class Ship:
         self.fuel = min(SHIP_START_FUEL, SHIP_MAX_FUEL)
         self.thrusting = False
         self.tractor_active = False
+        self.force_field_active = False
         self.has_orb = False
         self.orb_pulse_time = 0.0
         self.orb_pulse_phase = 0.0
@@ -477,6 +602,7 @@ class Ship:
         self.vy = 0.0
         self.thrusting = False
         self.tractor_active = False
+        self.force_field_active = False
 
     def start_dematerialize(self):
         self.transporter_state = 'dematerialize'
@@ -486,6 +612,7 @@ class Ship:
         self.vy = 0.0
         self.thrusting = False
         self.tractor_active = False
+        self.force_field_active = False
 
     def is_transporting(self):
         return self.transporter_state is not None and self.transporter_time > 0.0
@@ -506,6 +633,7 @@ class Ship:
     def update(self, dt, keys, controls, level):
         self.thrusting = False
         self.tractor_active = keys[controls['tractor']]
+        self.force_field_active = self.tractor_active and self.alive and not self.is_transporting()
         self.orb_pulse_time = max(0.0, self.orb_pulse_time - dt)
         self.bounce_flash_time = max(0.0, self.bounce_flash_time - dt)
         if self.has_orb:
@@ -537,15 +665,27 @@ class Ship:
         self.y += self.vy * dt
         self.x = level.wrap_x(self.x, self.radius)
 
+        collision_radius = self.collision_radius()
         for line in level.collision_lines():
-            if line_circle_collision(line, self.x, self.y, self.radius):
-                if SHIP_BOUNCES_INSTEAD_OF_DYING:
+            if line_circle_collision(line, self.x, self.y, collision_radius):
+                if self.can_bounce():
                     self.x = prev_x
                     self.y = prev_y
                     self.bounce_off_line(line, level)
                 else:
                     self.alive = False
                 break
+
+    def can_bounce(self):
+        return self.force_field_active or SHIP_BOUNCES_INSTEAD_OF_DYING
+
+    def force_field_hit_radius(self):
+        return max(self.radius, FORCE_FIELD_RADIUS)
+
+    def collision_radius(self):
+        if self.can_bounce():
+            return self.force_field_hit_radius()
+        return self.radius
 
     def get_triangle_points(self):
         angle_rad = math.radians(self.angle)
@@ -598,7 +738,7 @@ class Ship:
     def trigger_bounce_flash(self):
         self.bounce_flash_time = SHIP_BOUNCE_FLASH_DURATION
 
-    def bounce_off_normal(self, nx, ny):
+    def bounce_off_normal(self, nx, ny, separation=4.0):
         length = math.hypot(nx, ny)
         if length == 0.0:
             nx, ny = 0.0, -1.0
@@ -614,8 +754,8 @@ class Ship:
         self.vy -= (1.0 + SHIP_BOUNCE_RESTITUTION) * incoming * ny
         self.vx *= 0.92
         self.vy *= 0.92
-        self.x += nx * 4.0
-        self.y += ny * 4.0
+        self.x += nx * separation
+        self.y += ny * separation
         self.trigger_bounce_flash()
 
     def bounce_off_line(self, line, level):
@@ -736,6 +876,27 @@ class Ship:
             )
             screen.blit(pulse_surface, (0, 0))
 
+        if self.force_field_active:
+            shield_wave = 0.55 + 0.45 * math.sin(pygame.time.get_ticks() * 0.012)
+            shield_radius = int(self.force_field_hit_radius() + 2 + shield_wave * 2)
+            draw_glow_circle(
+                screen,
+                (110, 235, 255),
+                center,
+                shield_radius,
+                FORCE_FIELD_GLOW_RADIUS,
+                int(54 + 40 * shield_wave),
+            )
+            shield_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.circle(
+                shield_surface,
+                (170, 245, 255, int(68 + 42 * shield_wave)),
+                center,
+                shield_radius,
+                2,
+            )
+            screen.blit(shield_surface, (0, 0))
+
         fill_colour = (235, 240, 255)
         if self.is_transporting():
             min_y = min(point[1] for point in points)
@@ -826,6 +987,7 @@ class Turret:
         self.hit_points = TURRET_HIT_POINTS
         self.alive = True
         self.cooldown = 0.0
+        self.aim_angle = math.radians(direction)
         self.inaccuracy_degrees = 0.0
         if random.random() > TURRET_ACCURATE_CHANCE:
             self.inaccuracy_degrees = random.uniform(
@@ -835,18 +997,20 @@ class Turret:
 
     def update(self, dt, ship, bullets, level):
         if not self.alive:
-            return
+            return False
 
         self.cooldown -= dt
         if self.cooldown > 0:
-            return
+            return False
 
         # Very simple AI: fire if ship is not too far away.
         dx = level.wrapped_dx(self.x, ship.x)
         dy = ship.y - self.y
         distance = math.hypot(dx, dy)
+        if distance > 1e-6:
+            self.aim_angle = math.atan2(dy, dx)
         if distance < 260:
-            angle = math.atan2(dy, dx)
+            angle = self.aim_angle
             if self.inaccuracy_degrees > 0.0:
                 spread = math.radians(self.inaccuracy_degrees)
                 angle += random.uniform(-spread, spread)
@@ -860,6 +1024,8 @@ class Turret:
                 )
             )
             self.cooldown = TURRET_FIRE_COOLDOWN
+            return True
+        return False
 
     def contains_point(self, x, y, radius=0.0, level=None):
         dx = self.x - x
@@ -880,8 +1046,64 @@ class Turret:
         if not self.alive:
             return
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
-        rect = self.sprite.get_rect(center=(self.x + offset_x - camera_x, self.y - camera_y))
-        screen.blit(self.sprite, rect)
+        cx = self.x + offset_x - camera_x
+        cy = self.y - camera_y
+
+        base_rect = pygame.Rect(0, 0, 44, 18)
+        base_rect.center = (cx, cy + 11)
+        plinth_rect = pygame.Rect(0, 0, 32, 12)
+        plinth_rect.center = (cx, cy + 1)
+        head_center = (int(cx), int(cy - 6))
+
+        angle = self.aim_angle
+        ux = math.cos(angle)
+        uy = math.sin(angle)
+        px = -uy
+        py = ux
+
+        barrel_back = 6.0
+        barrel_len = 28.0
+        barrel_half = 4.5
+        breech_half_len = 9.0
+        breech_half_w = 7.0
+
+        breech_points = [
+            (cx - ux * breech_half_len + px * breech_half_w, cy - 6 - uy * breech_half_len + py * breech_half_w),
+            (cx + ux * breech_half_len + px * breech_half_w, cy - 6 + uy * breech_half_len + py * breech_half_w),
+            (cx + ux * breech_half_len - px * breech_half_w, cy - 6 + uy * breech_half_len - py * breech_half_w),
+            (cx - ux * breech_half_len - px * breech_half_w, cy - 6 - uy * breech_half_len - py * breech_half_w),
+        ]
+        barrel_start_x = cx + ux * barrel_back
+        barrel_start_y = cy - 6 + uy * barrel_back
+        barrel_end_x = cx + ux * barrel_len
+        barrel_end_y = cy - 6 + uy * barrel_len
+        barrel_points = [
+            (barrel_start_x + px * barrel_half, barrel_start_y + py * barrel_half),
+            (barrel_end_x + px * barrel_half, barrel_end_y + py * barrel_half),
+            (barrel_end_x - px * barrel_half, barrel_end_y - py * barrel_half),
+            (barrel_start_x - px * barrel_half, barrel_start_y - py * barrel_half),
+        ]
+
+        shadow_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow_surface, (0, 0, 0, 55), pygame.Rect(cx - 28, cy + 12, 56, 16))
+        screen.blit(shadow_surface, (0, 0))
+
+        pygame.draw.rect(screen, (58, 62, 70), base_rect, border_radius=5)
+        pygame.draw.rect(screen, (92, 98, 110), base_rect.inflate(-6, -6), border_radius=4)
+        pygame.draw.rect(screen, (74, 78, 88), plinth_rect, border_radius=4)
+
+        for x_offset in (-13, 0, 13):
+            pygame.draw.circle(screen, (122, 128, 140), (int(cx + x_offset), int(cy + 11)), 3)
+
+        pygame.draw.polygon(screen, (74, 80, 92), breech_points)
+        pygame.draw.polygon(screen, (138, 146, 160), breech_points, 1)
+        pygame.draw.polygon(screen, (88, 96, 110), barrel_points)
+        pygame.draw.polygon(screen, (160, 170, 186), barrel_points, 1)
+
+        pygame.draw.circle(screen, (66, 72, 82), head_center, 13)
+        pygame.draw.circle(screen, (124, 132, 148), head_center, 13, 2)
+        pygame.draw.circle(screen, (170, 184, 205), head_center, 5)
+        pygame.draw.circle(screen, (255, 120, 90), (int(cx + ux * 6), int(cy - 6 + uy * 6)), 2)
 
 
 class Tank:
@@ -898,7 +1120,7 @@ class Tank:
 
     def update(self, dt, ship, bullets, level):
         if not self.alive:
-            return
+            return False
 
         (ax, ay), (bx, by) = self.support_line
         min_x = min(ax, bx) + TANK_HALF_WIDTH
@@ -914,7 +1136,7 @@ class Tank:
 
         self.cooldown -= dt
         if self.cooldown > 0:
-            return
+            return False
 
         dx = level.wrapped_dx(self.x, ship.x)
         dy = ship.y - self.y
@@ -933,6 +1155,8 @@ class Tank:
                 )
             )
             self.cooldown = TANK_FIRE_COOLDOWN
+            return True
+        return False
 
     def contains_point(self, x, y, radius=0.0, level=None):
         dx = self.x - x
@@ -979,9 +1203,11 @@ class FuelPod:
         self.x = x
         self.y = y
         self.sprite = sprite
-        self.radius = max(14, int(min(sprite.get_width(), sprite.get_height()) * 0.30))
+        # Match the pod's tall drawn silhouette more closely so shield contact reads correctly.
+        self.radius = max(18, int(max(sprite.get_width(), sprite.get_height()) * 0.46))
         self.fuel_remaining = FUEL_POD_AMOUNT
         self.spawn_cooldown = 0.0
+        self.depleted_effect_played = False
 
     def contains_point(self, x, y, radius=0.0, level=None):
         dx = self.x - x
@@ -1007,16 +1233,21 @@ class FuelPod:
 
     def update(self, ship, level, tractor_active, dt, fuel_particles):
         if self.fuel_remaining <= 0.0:
-            return
+            return False
         self.spawn_cooldown = max(0.0, self.spawn_cooldown - dt)
         if not tractor_active or not self.tractor_beam_overlap(ship, level):
-            return
+            return False
 
         while self.fuel_remaining > 0.0 and self.spawn_cooldown <= 0.0:
             amount = min(FUEL_PARTICLE_VALUE, self.fuel_remaining)
             self.fuel_remaining -= amount
             fuel_particles.append(FuelTransferParticle(self.x, self.y, amount))
             self.spawn_cooldown += FUEL_PARTICLE_SPAWN_INTERVAL
+
+        if self.fuel_remaining <= 0.0 and not self.depleted_effect_played:
+            self.depleted_effect_played = True
+            return True
+        return False
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
         if self.fuel_remaining <= 0.0:
@@ -1330,6 +1561,7 @@ class Level:
         self.orbit_top_y = self.world_min_y - ORBIT_SCROLL_SPACE
         self.render_width = int(math.ceil(self.world_width))
         self.render_height = int(math.ceil(self.world_max_y - self.orbit_top_y))
+        self.star_field = self.build_star_field()
 
         self.turrets = [
             Turret(t["x"], t["y"], t.get("direction", -90), sprites["turret"])
@@ -1630,30 +1862,52 @@ class Level:
 
     def resolve_rock_terrain_collision(self, rock):
         collided = False
-        for line in self.collision_lines():
-            (ax, ay), (bx, by) = line
-            cx, cy = closest_point_on_segment(rock.x, rock.y, ax, ay, bx, by)
-            dx = rock.x - cx
-            dy = rock.y - cy
-            dist = math.hypot(dx, dy)
-            if dist >= rock.radius or dist == 0.0:
-                if dist != 0.0 or point_to_segment_distance(rock.x, rock.y, ax, ay, bx, by) >= rock.radius:
-                    continue
-                seg_dx = bx - ax
-                seg_dy = by - ay
-                seg_len = math.hypot(seg_dx, seg_dy)
-                if seg_len == 0.0:
-                    continue
-                nx = -seg_dy / seg_len
-                ny = seg_dx / seg_len
-            else:
-                nx = dx / dist
-                ny = dy / dist
+        wrap_offsets = (0.0,)
+        if self.world_width > 0.0:
+            wrap_offsets = (-self.world_width, 0.0, self.world_width)
 
-            penetration = rock.radius - max(dist, 0.0)
-            if penetration <= 0.0:
-                continue
+        for _ in range(4):
+            best_hit = None
+            for line in self.collision_lines():
+                (ax, ay), (bx, by) = line
+                for wrap_offset in wrap_offsets:
+                    shifted_ax = ax + wrap_offset
+                    shifted_bx = bx + wrap_offset
+                    cx, cy = closest_point_on_segment(rock.x, rock.y, shifted_ax, ay, shifted_bx, by)
+                    dx = rock.x - cx
+                    dy = rock.y - cy
+                    dist = math.hypot(dx, dy)
+                    penetration = rock.radius - dist
+                    if penetration <= 0.0:
+                        continue
 
+                    if dist > 1e-6:
+                        nx = dx / dist
+                        ny = dy / dist
+                    else:
+                        speed = math.hypot(rock.vx, rock.vy)
+                        if speed > 1e-6:
+                            nx = -rock.vx / speed
+                            ny = -rock.vy / speed
+                        else:
+                            seg_dx = shifted_bx - shifted_ax
+                            seg_dy = by - ay
+                            seg_len = math.hypot(seg_dx, seg_dy)
+                            if seg_len <= 1e-6:
+                                continue
+                            nx = -seg_dy / seg_len
+                            ny = seg_dx / seg_len
+                            if ny > 0.0:
+                                nx *= -1.0
+                                ny *= -1.0
+
+                    if best_hit is None or penetration > best_hit[0]:
+                        best_hit = (penetration, nx, ny)
+
+            if best_hit is None:
+                break
+
+            penetration, nx, ny = best_hit
             rock.x = self.wrap_x(rock.x + nx * (penetration + 0.05), rock.radius)
             rock.y += ny * (penetration + 0.05)
             vn = rock.vx * nx + rock.vy * ny
@@ -1671,6 +1925,7 @@ class Level:
                 rock.vy = 0.0
             rock.angular_velocity *= ROCK_GROUND_DAMPING
             collided = True
+
         return collided
 
     def resolve_orb_terrain_collision(self, orb):
@@ -1760,6 +2015,38 @@ class Level:
         anchor_x = camera_x + SCREEN_WIDTH * 0.5
         return anchor_x + self.wrapped_dx(anchor_x, world_x) - world_x
 
+
+    def build_star_field(self):
+        rng = random.Random(f"{self.name}-stars")
+        stars = []
+        for _ in range(STARFIELD_STAR_COUNT):
+            stars.append({
+                "x": rng.uniform(self.world_min_x, self.world_max_x),
+                "y": rng.uniform(self.orbit_top_y + 18.0, self.world_min_y + STARFIELD_FADE_START + STARFIELD_FADE_DISTANCE),
+                "radius": rng.choice((1, 1, 1, 2)),
+                "alpha": rng.randint(90, 180),
+            })
+        return stars
+
+    def draw_star_field(self, screen, camera_x=0.0, camera_y=0.0):
+        height_into_upper_band = self.world_min_y - camera_y
+        fade = max(0.0, min(1.0, (height_into_upper_band - STARFIELD_FADE_START) / STARFIELD_FADE_DISTANCE))
+        if fade <= 0.0:
+            return
+
+        star_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        for star in self.star_field:
+            offset_x = self.draw_world_offset(star["x"], camera_x) if self.world_width > SCREEN_WIDTH else 0.0
+            screen_x = int(star["x"] + offset_x - camera_x)
+            screen_y = int(star["y"] - camera_y)
+            if screen_x < -6 or screen_x > SCREEN_WIDTH + 6 or screen_y < -6 or screen_y > SCREEN_HEIGHT + 6:
+                continue
+            alpha = int(star["alpha"] * fade)
+            glow = max(40, int(alpha * 0.55))
+            pygame.draw.circle(star_surface, (170, 210, 255, glow), (screen_x, screen_y), star["radius"] + 2)
+            pygame.draw.circle(star_surface, (245, 248, 255, alpha), (screen_x, screen_y), star["radius"])
+        screen.blit(star_surface, (0, 0))
+
     def draw_line_to_surface(self, surface, colour, line, width):
         (ax, ay), (bx, by) = line
         start = (ax - self.world_min_x, ay - self.orbit_top_y)
@@ -1785,6 +2072,7 @@ class Level:
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0):
         screen.fill(self.background_colour)
+        self.draw_star_field(screen, camera_x, camera_y)
         if self.world_width > 0:
             local_camera_x = (camera_x - self.world_min_x) % self.world_width
         else:
@@ -1822,6 +2110,7 @@ class Level:
 
 class Game:
     def __init__(self):
+        pygame.mixer.pre_init(22050, -16, 1, 512)
         pygame.init()
         pygame.display.set_caption(TITLE)
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -1860,9 +2149,89 @@ class Game:
         self.game_won = False
         self.lives = 3
         self.running = True
+        self.paused = False
         self.camera_x = 0.0
         self.camera_y = 0.0
+        self.screen_flash_time = 0.0
+        self.screen_flash_duration = 0.0
+        self.camera_shake_time = 0.0
+        self.camera_shake_duration = 0.0
+        self.camera_shake_strength = 0.0
+        self.sound_enabled = pygame.mixer.get_init() is not None
+        self.sounds = {}
+        self.tractor_channel = None
+        self.thruster_channel = None
+        self.setup_audio()
         self.load_level(self.level_index)
+
+    def setup_audio(self):
+        if not self.sound_enabled:
+            return
+
+        self.sounds = {
+            "player_fire": create_tone_sound((760, 1120, 1380), 0.09, volume=0.26, decay=8.0),
+            "enemy_fire": create_tone_sound((240, 310, 420), 0.11, volume=0.22, decay=7.0),
+            "tractor_loop": create_tone_sound((90, 120, 180), 0.28, volume=0.18, decay=0.8),
+            "thruster_loop": create_noise_sound(0.72, volume=0.06, decay=0.12, smoothness=0.965, drive=4.8),
+            "orb_pickup": create_tone_sound((523, 659, 784, 1047), 0.42, volume=0.34, decay=2.2),
+            "orbit_ping": create_echo_tone_sound((1319, 1760, 2093), 0.80, volume=0.34, decay=4.2),
+            "fuel_pod_plop": create_bloop_sound(0.34, volume=0.34),
+            "explosion_small": create_noise_sound(0.42, volume=0.34, decay=2.8, smoothness=0.72, drive=3.8),
+            "explosion_medium": create_noise_sound(0.62, volume=0.44, decay=2.4, smoothness=0.78, drive=4.2),
+            "explosion_large": create_noise_sound(0.96, volume=0.58, decay=1.9, smoothness=0.82, drive=4.6),
+            "explosion_reactor": create_noise_sound(1.35, volume=0.78, decay=1.25, smoothness=0.88, drive=5.0),
+        }
+        self.tractor_channel = pygame.mixer.Channel(1)
+        self.thruster_channel = pygame.mixer.Channel(2)
+
+    def play_sound(self, name):
+        if not self.sound_enabled:
+            return
+        sound = self.sounds.get(name)
+        if sound is not None:
+            sound.play()
+
+    def update_audio(self):
+        if not self.sound_enabled or self.tractor_channel is None or self.thruster_channel is None:
+            return
+
+        tractor_active = (
+            self.ship is not None
+            and self.ship.is_operational()
+            and self.ship.tractor_active
+            and not self.level_destroyed
+            and not self.paused
+        )
+        if tractor_active:
+            if not self.tractor_channel.get_busy():
+                loop_sound = self.sounds.get("tractor_loop")
+                if loop_sound is not None:
+                    self.tractor_channel.play(loop_sound, loops=-1)
+        else:
+            self.tractor_channel.stop()
+
+        thruster_active = (
+            self.ship is not None
+            and self.ship.is_operational()
+            and self.ship.thrusting
+            and not self.level_destroyed
+            and not self.paused
+        )
+        if thruster_active:
+            if not self.thruster_channel.get_busy():
+                loop_sound = self.sounds.get("thruster_loop")
+                if loop_sound is not None:
+                    self.thruster_channel.play(loop_sound, loops=-1)
+        else:
+            self.thruster_channel.stop()
+
+    def stop_audio(self):
+        if not self.sound_enabled:
+            return
+        if self.tractor_channel is not None:
+            self.tractor_channel.stop()
+        if self.thruster_channel is not None:
+            self.thruster_channel.stop()
 
     def load_level(self, level_index):
         level_data = load_json(self.level_paths[level_index])
@@ -1882,6 +2251,12 @@ class Game:
         self.pending_orbit_exit_action = None
         self.ship.start_materialize()
         self.camera_x, self.camera_y = self.level.camera_for(self.ship.x, self.ship.y)
+        self.screen_flash_time = 0.0
+        self.screen_flash_duration = 0.0
+        self.camera_shake_time = 0.0
+        self.camera_shake_duration = 0.0
+        self.camera_shake_strength = 0.0
+        self.update_audio()
 
     def advance_to_next_level(self):
         next_index = self.level_index + 1
@@ -1901,17 +2276,20 @@ class Game:
         self.thrust_particles.clear()
         self.fuel_transfer_particles.clear()
         self.ship_destruction_time = 0.0
+        self.update_audio()
 
     def begin_orbit_exit(self, action):
         if not self.ship.alive or self.ship.is_transporting():
             return
         self.pending_orbit_exit_action = action
+        self.play_sound("orbit_ping")
         self.ship.start_dematerialize()
         self.bullets.clear()
         self.thrust_particles.clear()
         self.fuel_transfer_particles.clear()
 
     def spawn_turret_explosion(self, x, y):
+        self.play_sound("explosion_medium")
         for _ in range(TURRET_EXPLOSION_PARTICLES):
             angle = random.uniform(0.0, math.tau)
             speed = random.uniform(TURRET_SPARK_SPEED_MIN, TURRET_SPARK_SPEED_MAX)
@@ -1926,11 +2304,54 @@ class Game:
                 )
             )
 
-    def spawn_reactor_explosion(self, x, y):
-        for _ in range(REACTOR_EXPLOSION_PARTICLES):
-            angle = random.uniform(0.0, math.tau)
-            speed = random.uniform(120.0, 340.0)
+        for _ in range(18):
+            angle = random.uniform(-math.pi, 0.0)
+            speed = random.uniform(80.0, 240.0)
             life = random.uniform(0.25, 0.70)
+            self.flame_particles.append(
+                FlameParticle(
+                    x + random.uniform(-12.0, 12.0),
+                    y + random.uniform(-10.0, 8.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(10.0, 70.0),
+                    life,
+                )
+            )
+
+        for _ in range(10):
+            angle = random.uniform(math.pi * 1.05, math.pi * 1.95)
+            speed = random.uniform(90.0, 220.0)
+            life = random.uniform(0.45, 0.95)
+            self.reactor_debris_particles.append(
+                ReactorDebrisParticle(
+                    x + random.uniform(-10.0, 10.0),
+                    y + random.uniform(-8.0, 8.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(20.0, 80.0),
+                    life,
+                )
+            )
+
+    def spawn_rock_explosion(self, x, y):
+        self.play_sound("explosion_small")
+        for _ in range(26):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(50.0, 170.0)
+            life = random.uniform(0.45, 0.95)
+            self.reactor_debris_particles.append(
+                ReactorDebrisParticle(
+                    x + random.uniform(-6.0, 6.0),
+                    y + random.uniform(-6.0, 6.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(5.0, 45.0),
+                    life,
+                )
+            )
+
+        for _ in range(12):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(35.0, 140.0)
+            life = random.uniform(0.14, 0.30)
             self.spark_particles.append(
                 SparkParticle(
                     x,
@@ -1941,30 +2362,184 @@ class Game:
                 )
             )
 
-        for _ in range(28):
-            angle = random.uniform(-math.pi, 0.0)
-            speed = random.uniform(70.0, 210.0)
-            life = random.uniform(0.35, 0.85)
+    def spawn_tank_explosion(self, x, y):
+        self.play_sound("explosion_medium")
+        for _ in range(32):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(90.0, 240.0)
+            life = random.uniform(0.22, 0.55)
+            self.spark_particles.append(
+                SparkParticle(
+                    x,
+                    y,
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+        for _ in range(20):
+            angle = random.uniform(-math.pi, 0.15)
+            speed = random.uniform(70.0, 200.0)
+            life = random.uniform(0.28, 0.72)
             self.flame_particles.append(
                 FlameParticle(
-                    x + random.uniform(-18.0, 18.0),
-                    y + random.uniform(-10.0, 12.0),
+                    x + random.uniform(-16.0, 16.0),
+                    y + random.uniform(-8.0, 8.0),
                     math.cos(angle) * speed,
-                    math.sin(angle) * speed - random.uniform(20.0, 90.0),
+                    math.sin(angle) * speed - random.uniform(15.0, 75.0),
+                    life,
+                )
+            )
+
+        for _ in range(12):
+            angle = random.uniform(math.pi * 1.05, math.pi * 1.95)
+            speed = random.uniform(80.0, 210.0)
+            life = random.uniform(0.40, 0.90)
+            self.reactor_debris_particles.append(
+                ReactorDebrisParticle(
+                    x + random.uniform(-12.0, 12.0),
+                    y + random.uniform(-6.0, 8.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(20.0, 70.0),
+                    life,
+                )
+            )
+
+    def spawn_fuel_pod_plop(self, x, y):
+        self.play_sound("fuel_pod_plop")
+        for _ in range(14):
+            angle = random.uniform(-math.pi * 0.95, -math.pi * 0.05)
+            speed = random.uniform(22.0, 74.0)
+            life = random.uniform(0.08, 0.16)
+            self.spark_particles.append(
+                SparkParticle(
+                    x + random.uniform(-6.0, 6.0),
+                    y + random.uniform(-4.0, 4.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(6.0, 18.0),
+                    life,
+                )
+            )
+
+        for _ in range(8):
+            angle = random.uniform(-math.pi * 0.85, -math.pi * 0.15)
+            speed = random.uniform(18.0, 52.0)
+            life = random.uniform(0.10, 0.20)
+            self.flame_particles.append(
+                FlameParticle(
+                    x + random.uniform(-8.0, 8.0),
+                    y + random.uniform(-2.0, 5.0),
+                    math.cos(angle) * speed * 0.45,
+                    math.sin(angle) * speed - random.uniform(10.0, 22.0),
+                    life,
+                )
+            )
+
+        for _ in range(4):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(10.0, 26.0)
+            life = random.uniform(0.12, 0.22)
+            self.spark_particles.append(
+                SparkParticle(
+                    x,
+                    y - 4.0,
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+    def spawn_bullet_impact(self, x, y, from_player=False):
+        spark_count = 8 if from_player else 6
+        for _ in range(spark_count):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(60.0, 180.0)
+            life = random.uniform(0.10, 0.24)
+            self.spark_particles.append(
+                SparkParticle(
+                    x,
+                    y,
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+        flame_count = 3 if from_player else 2
+        for _ in range(flame_count):
+            angle = random.uniform(-math.pi, 0.0)
+            speed = random.uniform(30.0, 110.0)
+            life = random.uniform(0.10, 0.22)
+            self.flame_particles.append(
+                FlameParticle(
+                    x + random.uniform(-2.0, 2.0),
+                    y + random.uniform(-2.0, 2.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(5.0, 30.0),
+                    life,
+                )
+            )
+
+    def spawn_reactor_explosion(self, x, y):
+        self.play_sound("explosion_reactor")
+        self.screen_flash_time = 0.28
+        self.screen_flash_duration = 0.28
+        self.camera_shake_time = 0.9
+        self.camera_shake_duration = 0.9
+        self.camera_shake_strength = 18.0
+        for _ in range(REACTOR_EXPLOSION_PARTICLES):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(140.0, 420.0)
+            life = random.uniform(0.35, 0.95)
+            self.spark_particles.append(
+                SparkParticle(
+                    x,
+                    y,
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+        for _ in range(46):
+            angle = random.uniform(-math.pi, 0.0)
+            speed = random.uniform(90.0, 280.0)
+            life = random.uniform(0.45, 1.15)
+            self.flame_particles.append(
+                FlameParticle(
+                    x + random.uniform(-26.0, 26.0),
+                    y + random.uniform(-16.0, 16.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(35.0, 130.0),
                     life,
                 )
             )
 
         for _ in range(REACTOR_DEBRIS_PARTICLES):
             angle = random.uniform(math.pi * 1.05, math.pi * 1.95)
-            speed = random.uniform(140.0, 340.0)
-            life = random.uniform(1.0, 1.9)
+            speed = random.uniform(180.0, 420.0)
+            life = random.uniform(1.1, 2.3)
             self.reactor_debris_particles.append(
                 ReactorDebrisParticle(
-                    x + random.uniform(-22.0, 22.0),
-                    y + random.uniform(-16.0, 12.0),
+                    x + random.uniform(-30.0, 30.0),
+                    y + random.uniform(-22.0, 16.0),
                     math.cos(angle) * speed,
-                    math.sin(angle) * speed - random.uniform(80.0, 180.0),
+                    math.sin(angle) * speed - random.uniform(110.0, 230.0),
+                    life,
+                )
+            )
+
+        for _ in range(24):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(55.0, 170.0)
+            life = random.uniform(0.16, 0.38)
+            self.spark_particles.append(
+                SparkParticle(
+                    x + random.uniform(-8.0, 8.0),
+                    y + random.uniform(-8.0, 8.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
                     life,
                 )
             )
@@ -1985,6 +2560,7 @@ class Game:
             )
 
     def spawn_ship_explosion(self, x, y, vx=0.0, vy=0.0):
+        self.play_sound("explosion_large")
         for _ in range(SHIP_DESTRUCTION_SPARKS):
             angle = random.uniform(0.0, math.tau)
             speed = random.uniform(90.0, 250.0)
@@ -1993,6 +2569,20 @@ class Game:
                 SparkParticle(
                     x,
                     y,
+                    vx + math.cos(angle) * speed,
+                    vy + math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+        for _ in range(10):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(40.0, 120.0)
+            life = random.uniform(0.12, 0.30)
+            self.spark_particles.append(
+                SparkParticle(
+                    x + random.uniform(-4.0, 4.0),
+                    y + random.uniform(-4.0, 4.0),
                     vx + math.cos(angle) * speed,
                     vy + math.sin(angle) * speed,
                     life,
@@ -2036,9 +2626,12 @@ class Game:
         if lose_life:
             self.lives = max(0, self.lives - 1)
 
-    def ship_collision_response(self, nx, ny, lose_life=True):
-        if SHIP_BOUNCES_INSTEAD_OF_DYING:
-            self.ship.bounce_off_normal(nx, ny)
+    def ship_collision_response(self, nx, ny, lose_life=True, other_radius=0.0):
+        if self.ship.can_bounce():
+            distance = math.hypot(nx, ny)
+            overlap = (self.ship.collision_radius() + other_radius) - distance
+            separation = max(4.0, overlap + 2.0)
+            self.ship.bounce_off_normal(nx, ny, separation=separation)
             return
         self.destroy_ship(lose_life=lose_life)
 
@@ -2106,11 +2699,18 @@ class Game:
                 self.running = False
 
             if event.type == pygame.KEYDOWN:
+                if event.key == self.controls["pause"]:
+                    self.paused = not self.paused
+                    continue
+
                 if event.key == self.controls["fire"]:
                     if self.game_won:
                         continue
 
-                    if self.ship.is_operational() and not self.level_destroyed:
+                    keys = pygame.key.get_pressed()
+                    shield_active = keys[self.controls["tractor"]]
+
+                    if self.ship.is_operational() and not self.level_destroyed and not shield_active:
                         angle = math.radians(self.ship.angle)
                         bullet_x, bullet_y = self.ship.get_nose_position(offset=BULLET_SPAWN_OFFSET)
                         self.bullets.append(
@@ -2121,11 +2721,12 @@ class Game:
                                 math.sin(angle) * BULLET_SPEED,
                             )
                         )
-                    elif self.lives > 0 and not self.level_destroyed and self.ship_destruction_time <= 0.0:
+                        self.play_sound("player_fire")
+                    elif (not self.ship.alive) and self.lives > 0 and not self.level_destroyed and self.ship_destruction_time <= 0.0:
                         self.respawn_ship()
 
     def update(self, dt):
-        if self.game_won:
+        if self.game_won or self.paused:
             return
 
         self.level.update(dt)
@@ -2144,6 +2745,7 @@ class Game:
         if self.ship.is_operational() and not self.level_destroyed:
             was_alive = self.ship.alive
             self.ship.update(dt, keys, self.controls, self.level)
+            ship_collision_radius = self.ship.collision_radius()
 
             if was_alive and not self.ship.alive:
                 self.ship.alive = True
@@ -2151,36 +2753,36 @@ class Game:
 
             if self.ship.alive:
                 for turret in self.level.turrets:
-                    if turret.alive and turret.contains_point(self.ship.x, self.ship.y, self.ship.radius, self.level):
+                    if turret.alive and turret.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                         dx = self.level.wrapped_dx(turret.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - turret.y)
+                        self.ship_collision_response(dx, self.ship.y - turret.y, other_radius=turret.radius)
                         break
 
             if self.ship.alive:
                 for tank in self.level.tanks:
-                    if tank.alive and tank.contains_point(self.ship.x, self.ship.y, self.ship.radius, self.level):
+                    if tank.alive and tank.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                         dx = self.level.wrapped_dx(tank.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - tank.y)
+                        self.ship_collision_response(dx, self.ship.y - tank.y, other_radius=tank.radius)
                         break
 
             if self.ship.alive:
                 for rock in self.level.rocks:
-                    if rock.alive and rock.contains_point(self.ship.x, self.ship.y, self.ship.radius, self.level):
+                    if rock.alive and rock.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                         dx = self.level.wrapped_dx(rock.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - rock.y)
+                        self.ship_collision_response(dx, self.ship.y - rock.y, other_radius=rock.radius)
                         break
 
             if self.ship.alive:
                 for fuel_pod in self.level.fuel_pods:
-                    if fuel_pod.fuel_remaining > 0.0 and fuel_pod.contains_point(self.ship.x, self.ship.y, self.ship.radius, self.level):
+                    if fuel_pod.fuel_remaining > 0.0 and fuel_pod.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                         dx = self.level.wrapped_dx(fuel_pod.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - fuel_pod.y)
+                        self.ship_collision_response(dx, self.ship.y - fuel_pod.y, other_radius=fuel_pod.radius)
                         break
 
             reactor = self.level.reactor
-            if self.ship.alive and reactor and reactor.contains_point(self.ship.x, self.ship.y, self.ship.radius, self.level):
+            if self.ship.alive and reactor and reactor.alive and reactor.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                 dx = self.level.wrapped_dx(reactor.x, self.ship.x)
-                self.ship_collision_response(dx, self.ship.y - reactor.y)
+                self.ship_collision_response(dx, self.ship.y - reactor.y, other_radius=reactor.radius)
 
         if self.ship.is_operational() and self.ship.thrusting and not self.level_destroyed:
             base_left, base_right = self.ship.get_base_points()
@@ -2204,16 +2806,23 @@ class Game:
 
         if self.ship.is_operational() and not self.level_destroyed:
             for turret in self.level.turrets:
-                turret.update(dt, self.ship, self.bullets, self.level)
+                fired = turret.update(dt, self.ship, self.bullets, self.level)
+                if fired:
+                    self.play_sound("enemy_fire")
 
             for tank in self.level.tanks:
-                tank.update(dt, self.ship, self.bullets, self.level)
+                fired = tank.update(dt, self.ship, self.bullets, self.level)
+                if fired:
+                    self.play_sound("enemy_fire")
 
             for fuel_pod in self.level.fuel_pods:
-                fuel_pod.update(self.ship, self.level, self.ship.tractor_active, dt, self.fuel_transfer_particles)
+                depleted = fuel_pod.update(self.ship, self.level, self.ship.tractor_active, dt, self.fuel_transfer_particles)
+                if depleted:
+                    self.spawn_fuel_pod_plop(fuel_pod.x, fuel_pod.y)
 
             if self.level.orb:
-                self.level.orb.update(self.ship, self.level, self.ship.tractor_active, dt)
+                if self.level.orb.update(self.ship, self.level, self.ship.tractor_active, dt):
+                    self.play_sound("orb_pickup")
 
         for fuel_particle in self.fuel_transfer_particles:
             fuel_particle.update(dt, self.ship, self.level)
@@ -2222,15 +2831,21 @@ class Game:
             for bullet in self.bullets:
                 bullet.update(dt, self.level)
                 if not bullet.alive:
+                    self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
                     continue
 
                 if BULLETS_DESTROY_SHIP and not bullet.from_player and self.ship.is_operational():
-                    if math.hypot(self.level.wrapped_dx(bullet.x, self.ship.x), self.ship.y - bullet.y) <= (self.ship.radius + bullet.radius):
+                    hit_radius = self.ship.force_field_hit_radius() if self.ship.force_field_active else self.ship.radius
+                    if math.hypot(self.level.wrapped_dx(bullet.x, self.ship.x), self.ship.y - bullet.y) <= (hit_radius + bullet.radius):
                         bullet.alive = False
-                        self.ship_collision_response(
-                            self.level.wrapped_dx(bullet.x, self.ship.x),
-                            self.ship.y - bullet.y,
-                        )
+                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=False)
+                        if self.ship.force_field_active:
+                            self.ship.trigger_bounce_flash()
+                        else:
+                            self.ship_collision_response(
+                                self.level.wrapped_dx(bullet.x, self.ship.x),
+                                self.ship.y - bullet.y,
+                            )
                         continue
 
                 for rock in self.level.rocks:
@@ -2238,9 +2853,10 @@ class Game:
                         continue
                     if rock.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
                         bullet.alive = False
+                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                         rock.apply_hit()
                         self.level.rocks_unlocked = True
-                        self.spawn_turret_explosion(rock.x, rock.y)
+                        self.spawn_rock_explosion(rock.x, rock.y)
                         break
 
                 if not bullet.alive or not bullet.from_player:
@@ -2251,6 +2867,7 @@ class Game:
                         continue
                     if turret.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
                         bullet.alive = False
+                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                         destroyed = turret.apply_hit()
                         if destroyed:
                             self.spawn_turret_explosion(turret.x, turret.y)
@@ -2265,9 +2882,10 @@ class Game:
                         continue
                     if tank.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
                         bullet.alive = False
+                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                         destroyed = tank.apply_hit()
                         if destroyed:
-                            self.spawn_turret_explosion(tank.x, tank.y)
+                            self.spawn_tank_explosion(tank.x, tank.y)
                         break
 
                 if not bullet.alive:
@@ -2276,6 +2894,7 @@ class Game:
                 reactor = self.level.reactor
                 if reactor and reactor.alive and reactor.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
                     bullet.alive = False
+                    self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                     destroyed = reactor.apply_hit()
                     if destroyed:
                         self.spawn_reactor_explosion(reactor.x, reactor.y)
@@ -2308,7 +2927,22 @@ class Game:
                 self.advance_to_next_level()
                 return
 
+        if self.screen_flash_time > 0.0:
+            self.screen_flash_time = max(0.0, self.screen_flash_time - dt)
+
+        if self.camera_shake_time > 0.0:
+            self.camera_shake_time = max(0.0, self.camera_shake_time - dt)
+
         self.camera_x, self.camera_y = self.level.camera_for(self.ship.x, self.ship.y)
+        shake_x = 0.0
+        shake_y = 0.0
+        if self.camera_shake_time > 0.0 and self.camera_shake_duration > 0.0:
+            shake_phase = self.camera_shake_time / self.camera_shake_duration
+            shake_amount = self.camera_shake_strength * shake_phase
+            shake_x = random.uniform(-shake_amount, shake_amount)
+            shake_y = random.uniform(-shake_amount, shake_amount)
+        self.camera_x += shake_x
+        self.camera_y += shake_y
 
         if self.ship_destruction_time > 0.0:
             self.ship_destruction_time = max(0.0, self.ship_destruction_time - dt)
@@ -2331,6 +2965,7 @@ class Game:
         self.flame_particles = [f for f in self.flame_particles if f.alive]
         self.reactor_debris_particles = [d for d in self.reactor_debris_particles if d.alive]
         self.fuel_transfer_particles = [p for p in self.fuel_transfer_particles if p.alive]
+        self.update_audio()
 
     def draw_hud(self):
         fuel_text = self.font.render(f"Fuel: {int(self.ship.fuel)}", True, (255, 255, 255))
@@ -2356,11 +2991,24 @@ class Game:
         elif not self.level_destroyed:
             orbit_text = self.font.render("Orbit before reactor breach causes a free respawn", True, (180, 220, 255))
             self.screen.blit(orbit_text, (10, 130))
+            shield_key = format_key_binding(self.controls["tractor"])
+            shield_text = self.font.render(f"{shield_key}: tractor beam + force field", True, (140, 245, 225))
+            self.screen.blit(shield_text, (10, 160))
 
         if self.level_destroyed:
             msg = self.font.render("LEVEL SELF-DESTRUCTED", True, (255, 90, 60))
             rect = msg.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
             self.screen.blit(msg, rect)
+            return
+
+        if self.paused:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((8, 16, 28, 150))
+            self.screen.blit(overlay, (0, 0))
+            pause_text = self.font.render("PAUSED", True, (220, 245, 255))
+            pause_hint = self.font.render("Press P to resume", True, (140, 210, 255))
+            self.screen.blit(pause_text, pause_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 18)))
+            self.screen.blit(pause_hint, pause_hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 18)))
             return
 
         if not self.ship.alive:
@@ -2399,6 +3047,14 @@ class Game:
 
         self.ship.draw_tractor_beam(self.screen, self.camera_x, self.camera_y, self.level)
         self.ship.draw(self.screen, self.camera_x, self.camera_y, self.level)
+
+        if self.screen_flash_time > 0.0 and self.screen_flash_duration > 0.0:
+            flash_phase = self.screen_flash_time / self.screen_flash_duration
+            flash_alpha = int(190 * flash_phase)
+            flash = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            flash.fill((255, 244, 210, flash_alpha))
+            self.screen.blit(flash, (0, 0))
+
         self.draw_hud()
         pygame.display.flip()
 
@@ -2416,6 +3072,7 @@ class Game:
 
             self.draw()
 
+        self.stop_audio()
         if self.game_won:
             self.screen.fill((8, 8, 20))
             win_msg = self.font.render("Escape successful - all levels complete!", True, (120, 255, 120))
