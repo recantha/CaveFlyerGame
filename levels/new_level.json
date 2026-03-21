@@ -1,0 +1,28 @@
+{
+  "name": "a fresh start",
+  "gravity": 80.0,
+  "ship_start": [
+    220,
+    180
+  ],
+  "background_colour": [
+    10,
+    10,
+    18
+  ],
+  "world_bounds": [
+    80,
+    1500,
+    60,
+    1280
+  ],
+  "cave_lines": [],
+  "turrets": [],
+  "gates": [],
+  "switches": [],
+  "fuel_pods": [],
+  "orb": null,
+  "rocks": [],
+  "rock_piles": [],
+  "reactor": null
+}

@@ -215,6 +215,50 @@
       "direction": -90
     }
   ],
+  "gates": [
+    {
+      "id": "chimney_mid",
+      "x": 860,
+      "y": 610,
+      "width": 26,
+      "height": 190,
+      "slide_dy": -88,
+      "open_duration": 3.4,
+      "slide_time": 0.5
+    },
+    {
+      "id": "chimney_core",
+      "x": 1080,
+      "y": 960,
+      "width": 180,
+      "height": 26,
+      "slide_dx": 88,
+      "open_duration": 4.2,
+      "slide_time": 0.6
+    }
+  ],
+  "switches": [
+    {
+      "x": 770,
+      "y": 680,
+      "gate_id": "chimney_mid"
+    },
+    {
+      "x": 980,
+      "y": 615,
+      "gate_id": "chimney_mid"
+    },
+    {
+      "x": 980,
+      "y": 860,
+      "gate_id": "chimney_core"
+    },
+    {
+      "x": 1180,
+      "y": 960,
+      "gate_id": "chimney_core"
+    }
+  ],
   "fuel_pods": [
     {
       "x": 460,

@@ -1,3 +1,4 @@
+import argparse
 import glob
 import json
 import math
@@ -24,6 +25,13 @@ from settings import (
     SHIP_MAX_FUEL,
     SHIP_START_FUEL,
     FUEL_POD_AMOUNT,
+    TRACTOR_FUEL_BURN_RATE,
+    SCORE_ROCK,
+    SCORE_PLINTH,
+    SCORE_TURRET,
+    SCORE_TANK,
+    SCORE_REACTOR,
+    EXTRA_LIFE_SCORE,
     TURRET_ACCURATE_CHANCE,
     TURRET_INACCURATE_SPREAD_MIN,
     TURRET_INACCURATE_SPREAD_MAX,
@@ -149,6 +157,173 @@ def line_circle_collision(line, cx, cy, radius):
     """True if the circle touches the line segment."""
     (ax, ay), (bx, by) = line
     return point_to_segment_distance(cx, cy, ax, ay, bx, by) <= radius
+
+
+def circle_rect_collision(cx, cy, radius, rx, ry, half_w, half_h):
+    nearest_x = max(rx - half_w, min(cx, rx + half_w))
+    nearest_y = max(ry - half_h, min(cy, ry + half_h))
+    return math.hypot(cx - nearest_x, cy - nearest_y) <= radius
+
+
+def orientation(ax, ay, bx, by, cx, cy):
+    value = (by - ay) * (cx - bx) - (bx - ax) * (cy - by)
+    if abs(value) < 1e-6:
+        return 0
+    return 1 if value > 0.0 else 2
+
+
+def on_segment(ax, ay, bx, by, cx, cy):
+    return (
+        min(ax, cx) - 1e-6 <= bx <= max(ax, cx) + 1e-6
+        and min(ay, cy) - 1e-6 <= by <= max(ay, cy) + 1e-6
+    )
+
+
+def segments_intersect(a_start, a_end, b_start, b_end):
+    """Return True if line segments AB and CD intersect."""
+    ax, ay = a_start
+    bx, by = a_end
+    cx, cy = b_start
+    dx, dy = b_end
+
+    o1 = orientation(ax, ay, bx, by, cx, cy)
+    o2 = orientation(ax, ay, bx, by, dx, dy)
+    o3 = orientation(cx, cy, dx, dy, ax, ay)
+    o4 = orientation(cx, cy, dx, dy, bx, by)
+
+    if o1 != o2 and o3 != o4:
+        return True
+    if o1 == 0 and on_segment(ax, ay, cx, cy, bx, by):
+        return True
+    if o2 == 0 and on_segment(ax, ay, dx, dy, bx, by):
+        return True
+    if o3 == 0 and on_segment(cx, cy, ax, ay, dx, dy):
+        return True
+    if o4 == 0 and on_segment(cx, cy, bx, by, dx, dy):
+        return True
+    return False
+
+
+def segment_intersection_distance(a_start, a_end, b_start, b_end):
+    """Return the distance from A start to the segment intersection, or None."""
+    ax, ay = a_start
+    bx, by = a_end
+    cx, cy = b_start
+    dx, dy = b_end
+
+    r_x = bx - ax
+    r_y = by - ay
+    s_x = dx - cx
+    s_y = dy - cy
+    denom = r_x * s_y - r_y * s_x
+
+    if abs(denom) < 1e-6:
+        return None
+
+    diff_x = cx - ax
+    diff_y = cy - ay
+    t = (diff_x * s_y - diff_y * s_x) / denom
+    u = (diff_x * r_y - diff_y * r_x) / denom
+
+    if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+        return math.hypot(r_x, r_y) * t
+    return None
+
+
+def chaikin_smooth_points(points, iterations=2):
+    """Round a polyline into a softer curve using Chaikin corner cutting."""
+    if len(points) < 3:
+        return list(points)
+
+    smoothed = [tuple(points[0]), tuple(points[-1])]
+    current = [tuple(point) for point in points]
+
+    for _ in range(iterations):
+        next_points = [current[0]]
+        for index in range(len(current) - 1):
+            ax, ay = current[index]
+            bx, by = current[index + 1]
+            q = (ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25)
+            r = (ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75)
+            next_points.extend((q, r))
+        next_points.append(current[-1])
+        current = next_points
+
+    return current
+
+
+def smooth_cave_lines(lines, iterations=2):
+    """Smooth connected non-horizontal terrain chains while preserving flat platforms."""
+    if not lines:
+        return []
+
+    chains = []
+    current_chain = [lines[0]]
+    for line in lines[1:]:
+        if current_chain[-1][1] == line[0]:
+            current_chain.append(line)
+        else:
+            chains.append(current_chain)
+            current_chain = [line]
+    chains.append(current_chain)
+
+    smoothed_lines = []
+    for chain in chains:
+        if len(chain) == 1 or all(abs(segment[0][1] - segment[1][1]) < 0.01 for segment in chain):
+            smoothed_lines.extend(chain)
+            continue
+
+        points = [chain[0][0]]
+        points.extend(segment[1] for segment in chain)
+        smoothed_points = chaikin_smooth_points(points, iterations=iterations)
+        for start, end in zip(smoothed_points, smoothed_points[1:]):
+            smoothed_lines.append((start, end))
+
+    return smoothed_lines
+
+
+def roughen_floor_lines(lines, world_max_y, seed_key):
+    """Add downward bumps to the lowest horizontal floor segments."""
+    if not lines:
+        return []
+
+    rng = random.Random(f"{seed_key}-floor-roughness")
+    roughened = []
+    floor_threshold = world_max_y - 80.0
+
+    for line in lines:
+        (ax, ay), (bx, by) = line
+        if abs(ay - by) >= 0.01 or ay < floor_threshold:
+            roughened.append(line)
+            continue
+
+        line_length = abs(bx - ax)
+        if line_length < 120.0:
+            roughened.append(line)
+            continue
+
+        direction = 1.0 if bx >= ax else -1.0
+        span = line_length
+        step = 36.0
+        point_count = max(4, int(span / step))
+        points = []
+        for index in range(point_count + 1):
+            t = index / point_count
+            x = ax + direction * span * t
+            envelope = math.sin(math.pi * t)
+            bump = (
+                math.sin(t * math.tau * rng.randint(2, 4) + rng.uniform(0.0, math.tau)) * 7.0
+                + math.sin(t * math.tau * rng.randint(4, 7) + rng.uniform(0.0, math.tau)) * 3.5
+                + rng.uniform(-2.5, 2.5)
+            )
+            y = ay + max(0.0, bump * envelope + envelope * rng.uniform(5.0, 11.0))
+            points.append((x, y))
+
+        smoothed_points = chaikin_smooth_points(points, iterations=2)
+        for start, end in zip(smoothed_points, smoothed_points[1:]):
+            roughened.append((start, end))
+
+    return roughened
 
 
 def load_controls(path="controls.json"):
@@ -632,7 +807,7 @@ class Ship:
 
     def update(self, dt, keys, controls, level):
         self.thrusting = False
-        self.tractor_active = keys[controls['tractor']]
+        self.tractor_active = keys[controls['tractor']] and self.fuel > 0.0
         self.force_field_active = self.tractor_active and self.alive and not self.is_transporting()
         self.orb_pulse_time = max(0.0, self.orb_pulse_time - dt)
         self.bounce_flash_time = max(0.0, self.bounce_flash_time - dt)
@@ -656,25 +831,41 @@ class Ship:
             self.fuel = max(0.0, self.fuel - 12.0 * dt)
             self.thrusting = True
 
+        if self.tractor_active:
+            self.fuel = max(0.0, self.fuel - TRACTOR_FUEL_BURN_RATE * dt)
+            if self.fuel <= 0.0:
+                self.tractor_active = False
+                self.force_field_active = False
+
         self.vx *= SHIP_DAMPING
         self.vy *= SHIP_DAMPING
 
-        prev_x = self.x
-        prev_y = self.y
-        self.x += self.vx * dt
-        self.y += self.vy * dt
-        self.x = level.wrap_x(self.x, self.radius)
-
         collision_radius = self.collision_radius()
-        for line in level.collision_lines():
-            if line_circle_collision(line, self.x, self.y, collision_radius):
-                if self.can_bounce():
-                    self.x = prev_x
-                    self.y = prev_y
-                    self.bounce_off_line(line, level)
-                else:
-                    self.alive = False
-                break
+        steps = max(1, int(math.ceil(max(abs(self.vx), abs(self.vy)) * dt / max(1.0, collision_radius * 0.35))))
+        step_dt = dt / steps
+        for _ in range(steps):
+            prev_x = self.x
+            prev_y = self.y
+            self.x += self.vx * step_dt
+            self.y += self.vy * step_dt
+            self.x = level.wrap_x(self.x, self.radius)
+
+            collided_line = None
+            for line in level.collision_lines():
+                if line_circle_collision(line, self.x, self.y, collision_radius):
+                    collided_line = line
+                    break
+
+            if collided_line is None:
+                continue
+
+            if self.can_bounce():
+                self.x = prev_x
+                self.y = prev_y
+                self.bounce_off_line(collided_line, level)
+            else:
+                self.alive = False
+            break
 
     def can_bounce(self):
         return self.force_field_active or SHIP_BOUNCES_INSTEAD_OF_DYING
@@ -959,6 +1150,14 @@ class Ship:
         uy = -math.sin(angle_rad)
         px = -uy
         py = ux
+        if level is not None:
+            beam_length = level.tractor_beam_visible_length(anchor_x, anchor_y, ux, uy, beam_length)
+            beam_length = max(
+                beam_length,
+                level.tractor_beam_target_length(anchor_x, anchor_y, ux, uy, beam_half_width),
+            )
+        if beam_length <= 2.0:
+            return
         tip_x = anchor_x + ux * beam_length
         tip_y = anchor_y + uy * beam_length
         left_x = tip_x + px * beam_half_width
@@ -983,6 +1182,7 @@ class Turret:
         self.y = y
         self.direction = direction
         self.sprite = sprite
+        self.floor_offset = 10.0
         self.radius = TURRET_RADIUS
         self.hit_points = TURRET_HIT_POINTS
         self.alive = True
@@ -1198,6 +1398,156 @@ class Tank:
         pygame.draw.line(screen, (160, 170, 140), (cx, cy - 9), (barrel_end_x, barrel_end_y), 4)
 
 
+class Gate:
+    def __init__(self, gate_id, x, y, width, height, slide_dx=0.0, slide_dy=0.0, open_duration=3.5, slide_time=0.55):
+        self.gate_id = gate_id
+        self.closed_x = x
+        self.closed_y = y
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        if self.height >= self.width:
+            self.height = min(self.height, 200.0)
+            slide_amount = abs(slide_dy) if abs(slide_dy) > 0.0 else abs(slide_dx)
+            if slide_amount <= 0.0:
+                slide_amount = min(96.0, self.height * 0.45)
+            slide_sign = -1.0 if (slide_dy < 0.0 or (slide_dy == 0.0 and slide_dx < 0.0)) else 1.0
+            self.slide_dx = 0.0
+            self.slide_dy = slide_sign * slide_amount
+        else:
+            self.width = min(self.width, 200.0)
+            slide_amount = abs(slide_dx) if abs(slide_dx) > 0.0 else abs(slide_dy)
+            if slide_amount <= 0.0:
+                slide_amount = min(96.0, self.width * 0.45)
+            slide_sign = -1.0 if (slide_dx < 0.0 or (slide_dx == 0.0 and slide_dy < 0.0)) else 1.0
+            self.slide_dx = slide_sign * slide_amount
+            self.slide_dy = 0.0
+        self.half_w = width * 0.5
+        self.half_h = height * 0.5
+        self.half_w = self.width * 0.5
+        self.half_h = self.height * 0.5
+        self.open_duration = open_duration
+        self.slide_time = max(0.05, slide_time)
+        self.open_timer = 0.0
+        self.open_amount = 0.0
+        self.radius = math.hypot(self.half_w, self.half_h)
+
+    def activate(self):
+        self.open_timer = self.open_duration
+
+    def update(self, dt):
+        if self.open_timer > 0.0:
+            self.open_timer = max(0.0, self.open_timer - dt)
+        target_amount = 1.0 if self.open_timer > 0.0 else 0.0
+        step = dt / self.slide_time
+        if self.open_amount < target_amount:
+            self.open_amount = min(target_amount, self.open_amount + step)
+        elif self.open_amount > target_amount:
+            self.open_amount = max(target_amount, self.open_amount - step)
+        self.x = self.closed_x + self.slide_dx * self.open_amount
+        self.y = self.closed_y + self.slide_dy * self.open_amount
+
+    def contains_point(self, x, y, radius=0.0, level=None):
+        dx = self.x - x
+        if level is not None:
+            dx = level.wrapped_dx(x, self.x)
+        return circle_rect_collision(dx, y, radius, 0.0, self.y, self.half_w, self.half_h)
+
+    def segments(self, level=None):
+        left = self.x - self.half_w
+        right = self.x + self.half_w
+        top = self.y - self.half_h
+        bottom = self.y + self.half_h
+        return [
+            ((left, top), (right, top)),
+            ((right, top), (right, bottom)),
+            ((right, bottom), (left, bottom)),
+            ((left, bottom), (left, top)),
+        ]
+
+    def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
+        offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
+        cx = int(self.x + offset_x - camera_x)
+        cy = int(self.y - camera_y)
+        rect = pygame.Rect(0, 0, int(self.width), int(self.height))
+        rect.center = (cx, cy)
+        if self.height >= self.width:
+            panel_rect = rect.inflate(-8, 0)
+            core_rect = panel_rect.inflate(-6, -8)
+        else:
+            panel_rect = rect.inflate(0, -8)
+            core_rect = panel_rect.inflate(-8, -6)
+
+        glow_alpha = int(30 + 70 * (1.0 - self.open_amount))
+        glow_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        pygame.draw.rect(glow_surface, (120, 240, 255, glow_alpha), panel_rect.inflate(8, 8), border_radius=7)
+        screen.blit(glow_surface, (0, 0))
+
+        pygame.draw.rect(screen, (70, 94, 108), panel_rect, border_radius=6)
+        pygame.draw.rect(screen, (170, 226, 242), panel_rect, 2, border_radius=6)
+        pygame.draw.rect(screen, (42, 58, 72), core_rect, border_radius=4)
+        pygame.draw.line(screen, (126, 186, 204), (core_rect.left + 3, core_rect.top + 3), (core_rect.right - 3, core_rect.top + 3), 2)
+        pygame.draw.line(screen, (18, 26, 36), (core_rect.left + 3, core_rect.bottom - 3), (core_rect.right - 3, core_rect.bottom - 3), 2)
+        if self.height >= self.width:
+            seam_y = core_rect.centery
+            pygame.draw.line(screen, (98, 148, 166), (core_rect.left + 2, seam_y), (core_rect.right - 2, seam_y), 2)
+        else:
+            seam_x = core_rect.centerx
+            pygame.draw.line(screen, (98, 148, 166), (seam_x, core_rect.top + 2), (seam_x, core_rect.bottom - 2), 2)
+
+
+class Switch:
+    def __init__(self, x, y, gate_id, radius=14):
+        self.x = x
+        self.y = y
+        self.gate_id = gate_id
+        self.radius = radius
+        self.floor_offset = 18.0
+        self.flash_time = 0.0
+
+    def activate(self, gate):
+        self.flash_time = 0.22
+        if gate is not None:
+            gate.activate()
+
+    def update(self, dt):
+        self.flash_time = max(0.0, self.flash_time - dt)
+
+    def contains_point(self, x, y, radius=0.0, level=None):
+        dx = self.x - x
+        if level is not None:
+            dx = level.wrapped_dx(x, self.x)
+        return math.hypot(dx, self.y - y) <= self.radius + radius
+
+    def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None, gate=None):
+        offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
+        cx = int(self.x + offset_x - camera_x)
+        cy = int(self.y - camera_y)
+        base_rect = pygame.Rect(0, 0, 24, 12)
+        base_rect.center = (cx, cy + 12)
+        active = gate is not None and gate.open_timer > 0.0
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.012)
+        if self.flash_time > 0.0:
+            lens_colour = (255, 245, 170)
+            glow_colour = (255, 235, 120)
+            glow_alpha = int(120 + 90 * pulse)
+        elif active:
+            lens_colour = (140, 255, 185)
+            glow_colour = (80, 235, 160)
+            glow_alpha = int(70 + 45 * pulse)
+        else:
+            lens_colour = (255, 142, 92)
+            glow_colour = (255, 112, 70)
+            glow_alpha = int(52 + 24 * pulse)
+
+        pygame.draw.rect(screen, (96, 104, 116), base_rect, border_radius=4)
+        pygame.draw.rect(screen, (150, 160, 174), base_rect, 2, border_radius=4)
+        draw_glow_circle(screen, glow_colour, (cx, cy), self.radius - 4, self.radius + 10, glow_alpha)
+        pygame.draw.circle(screen, lens_colour, (cx, cy), self.radius - 4)
+        pygame.draw.circle(screen, (245, 248, 255), (cx, cy), self.radius - 4, 2)
+
+
 class FuelPod:
     def __init__(self, x, y, sprite):
         self.x = x
@@ -1229,7 +1579,15 @@ class FuelPod:
         if along < 0.0 or along > TRACTOR_BEAM_LENGTH:
             return False
         width_here = TRACTOR_BEAM_HALF_WIDTH * (0.45 + 0.55 * (1.0 - along / TRACTOR_BEAM_LENGTH))
-        return abs(perp) <= width_here + self.radius
+        if abs(perp) > width_here + self.radius:
+            return False
+        return not level.tractor_terrain_blocked(
+            anchor_x,
+            anchor_y,
+            self.x,
+            self.y,
+            end_clearance=self.radius + 6.0,
+        )
 
     def update(self, ship, level, tractor_active, dt, fuel_particles):
         if self.fuel_remaining <= 0.0:
@@ -1241,7 +1599,7 @@ class FuelPod:
         while self.fuel_remaining > 0.0 and self.spawn_cooldown <= 0.0:
             amount = min(FUEL_PARTICLE_VALUE, self.fuel_remaining)
             self.fuel_remaining -= amount
-            fuel_particles.append(FuelTransferParticle(self.x, self.y, amount))
+            fuel_particles.append(FuelTransferParticle(self.x, self.y, amount, self))
             self.spawn_cooldown += FUEL_PARTICLE_SPAWN_INTERVAL
 
         if self.fuel_remaining <= 0.0 and not self.depleted_effect_played:
@@ -1267,10 +1625,11 @@ class FuelPod:
 
 
 class FuelTransferParticle:
-    def __init__(self, x, y, fuel_amount):
+    def __init__(self, x, y, fuel_amount, source_pod=None):
         self.x = x + random.uniform(-8.0, 8.0)
         self.y = y + random.uniform(-10.0, 10.0)
         self.fuel_amount = fuel_amount
+        self.source_pod = source_pod
         self.state = "pulling"
         self.fade_time = FUEL_PARTICLE_FADE_TIME
         self.alive = True
@@ -1284,6 +1643,9 @@ class FuelTransferParticle:
                 self.state = "fading"
             else:
                 target_x, target_y = ship.get_tractor_anchor(offset=-TRACTOR_TARGET_OFFSET)
+                if level.tractor_terrain_blocked(self.x, self.y, target_x, target_y):
+                    self.state = "fading"
+                    return False
                 dx = level.wrapped_dx(self.x, target_x)
                 dy = target_y - self.y
                 dist = math.hypot(dx, dy)
@@ -1321,15 +1683,91 @@ class Orb:
         self.y = y
         self.sprite = sprite
         self.radius = sprite.get_width() * 0.5
+        self.plinth_x = x
+        self.plinth_y = y
+        self.plinth_half_width = 27.0
+        self.plinth_alive = True
+        self.plinth_hit_points = 5
+        self.plinth_flash_time = 0.0
         self.collected = False
         self.vx = 0.0
         self.vy = 0.0
         self.resting = True
         self.beam_locked_last_frame = False
 
+    def set_plinth_position(self, x, y):
+        self.plinth_x = x
+        self.plinth_y = y
+        self.plinth_alive = True
+        self.plinth_hit_points = 5
+        self.plinth_flash_time = 0.0
+        self.x = x
+        self.y = self.plinth_support_y()
+        self.vx = 0.0
+        self.vy = 0.0
+        self.resting = True
+
+    def plinth_support_y(self):
+        return self.plinth_support_y_for_offset(0.0)
+
+    def plinth_support_y_for_offset(self, offset_x):
+        floor_y = self.plinth_y + self.radius
+        plinth_top_y = floor_y - 34.0
+        cap_bottom_y = plinth_top_y + 6.0
+        edge_lift = min(1.0, abs(offset_x) / max(1.0, self.plinth_half_width - 8.0))
+        cradle_y = cap_bottom_y - 7.0 + 7.0 * (edge_lift * edge_lift)
+        return cradle_y - self.radius + 1.0
+
+    def resolve_plinth_collision(self, level):
+        if not self.plinth_alive:
+            return False
+        dx = level.wrapped_dx(self.plinth_x, self.x)
+        if abs(dx) > (self.plinth_half_width - 4.0):
+            return False
+        support_y = self.plinth_support_y_for_offset(dx)
+        if self.y < support_y:
+            return False
+        self.x = level.wrap_x(self.x, self.radius)
+        self.y = support_y
+        self.vx = 0.0
+        self.vy = 0.0
+        self.resting = True
+        return True
+
+    def plinth_contains_point(self, x, y, radius=0.0, level=None):
+        if not self.plinth_alive:
+            return False
+        dx = self.plinth_x - x
+        if level is not None:
+            dx = level.wrapped_dx(x, self.plinth_x)
+        support_y = self.plinth_support_y_for_offset(max(-self.plinth_half_width, min(self.plinth_half_width, dx)))
+        plinth_center_y = support_y + self.radius - 15.0
+        return abs(dx) <= (self.plinth_half_width + radius) and abs(plinth_center_y - y) <= (22.0 + radius)
+
+    def destroy_plinth(self):
+        if not self.plinth_alive:
+            return False
+        self.plinth_alive = False
+        if not self.collected:
+            self.resting = False
+            self.vx *= 0.3
+            self.vy = max(self.vy, 0.0)
+        return True
+
+    def hit_plinth(self):
+        if not self.plinth_alive:
+            return False
+        self.plinth_flash_time = 0.20
+        self.plinth_hit_points -= 1
+        if self.plinth_hit_points <= 0:
+            return self.destroy_plinth()
+        return False
+
     def update(self, ship, level, tractor_active, dt):
         if self.collected:
             return False
+
+        self.plinth_flash_time = max(0.0, self.plinth_flash_time - dt)
 
         beam_locked = False
         if tractor_active:
@@ -1348,6 +1786,14 @@ class Orb:
             if 0.0 <= along <= beam_length:
                 width_here = beam_half_width * (0.45 + 0.55 * (1.0 - along / beam_length))
                 beam_locked = abs(perp) <= width_here
+                if beam_locked:
+                    beam_locked = not level.tractor_terrain_blocked(
+                        anchor_x,
+                        anchor_y,
+                        self.x,
+                        self.y,
+                        end_clearance=self.radius + 6.0,
+                    )
 
             if beam_locked:
                 target_x, target_y = ship.get_tractor_anchor(offset=-TRACTOR_TARGET_OFFSET)
@@ -1377,7 +1823,7 @@ class Orb:
             for _ in range(steps):
                 self.x = level.wrap_x(self.x + self.vx * step_dt, self.radius)
                 self.y += self.vy * step_dt
-                if level.resolve_orb_terrain_collision(self):
+                if self.resolve_plinth_collision(level) or level.resolve_orb_terrain_collision(self):
                     self.vx = 0.0
                     self.vy = 0.0
                     self.resting = True
@@ -1390,6 +1836,61 @@ class Orb:
         return False
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
+        plinth_offset_x = level.draw_world_offset(self.plinth_x, camera_x) if level else 0.0
+        plinth_cx = int(self.plinth_x + plinth_offset_x - camera_x)
+        floor_y = int(self.plinth_y + self.radius - camera_y)
+        plinth_base_y = floor_y
+        plinth_top_y = floor_y - 34
+        body_rect = pygame.Rect(0, 0, 30, max(14, plinth_base_y - plinth_top_y))
+        body_rect.midtop = (plinth_cx, plinth_top_y)
+        cap_rect = pygame.Rect(0, 0, 54, 16)
+        cap_rect.midbottom = (plinth_cx, plinth_top_y + 6)
+        foot_rect = pygame.Rect(0, 0, 42, 10)
+        foot_rect.midbottom = (plinth_cx, plinth_base_y)
+        active_plinth = self.plinth_alive and not self.collected
+        if active_plinth:
+            body_fill = (146, 104, 18)
+            body_outline = (236, 194, 78)
+            cap_fill = (242, 204, 92)
+            cap_outline = (255, 232, 154)
+            cradle_colour = (176, 122, 26)
+            lip_colour = (255, 236, 170)
+            foot_fill = (188, 148, 44)
+            foot_outline = (248, 215, 112)
+            draw_glow_circle(screen, (255, 208, 82), (plinth_cx, plinth_top_y + 8), 18, 34, 78)
+        else:
+            body_fill = (86, 88, 92)
+            body_outline = (138, 142, 150)
+            cap_fill = (116, 120, 128)
+            cap_outline = (164, 168, 176)
+            cradle_colour = (84, 88, 96)
+            lip_colour = (176, 180, 188)
+            foot_fill = (104, 108, 116)
+            foot_outline = (156, 160, 168)
+        if self.plinth_alive:
+            pygame.draw.rect(screen, body_fill, body_rect, border_radius=6)
+            pygame.draw.rect(screen, body_outline, body_rect, 2, border_radius=6)
+            pygame.draw.ellipse(screen, cap_fill, cap_rect)
+            pygame.draw.ellipse(screen, cap_outline, cap_rect, 2)
+            cradle_rect = cap_rect.inflate(-10, -1)
+            pygame.draw.arc(screen, cradle_colour, cradle_rect, math.pi, math.tau, 3)
+            lip_rect = cap_rect.inflate(-16, -8)
+            pygame.draw.arc(screen, lip_colour, lip_rect, math.pi, math.tau, 2)
+            pygame.draw.rect(screen, foot_fill, foot_rect, border_radius=4)
+            pygame.draw.rect(screen, foot_outline, foot_rect, 2, border_radius=4)
+            if self.plinth_flash_time > 0.0:
+                flash_alpha = int(220 * (self.plinth_flash_time / 0.20))
+                flash_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                pygame.draw.rect(flash_surface, (255, 248, 210, flash_alpha), body_rect, border_radius=6)
+                pygame.draw.ellipse(flash_surface, (255, 252, 220, flash_alpha), cap_rect)
+                pygame.draw.rect(flash_surface, (255, 244, 200, flash_alpha), foot_rect, border_radius=4)
+                screen.blit(flash_surface, (0, 0))
+        else:
+            rubble_rect = pygame.Rect(0, 0, 40, 10)
+            rubble_rect.midbottom = (plinth_cx, plinth_base_y)
+            pygame.draw.rect(screen, (102, 104, 110), rubble_rect, border_radius=4)
+            pygame.draw.rect(screen, (146, 148, 156), rubble_rect, 2, border_radius=4)
+
         if self.collected:
             return
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
@@ -1544,7 +2045,6 @@ class Level:
         self.background_colour = tuple(level_data.get("background_colour", [0, 0, 0]))
         self.ship_start = tuple(level_data["ship_start"])
         self.base_cave_lines = [tuple(map(tuple, line)) for line in level_data["cave_lines"]]
-        self.cave_lines = list(self.base_cave_lines)
         world_bounds = level_data.get("world_bounds")
 
         if world_bounds:
@@ -1557,15 +2057,42 @@ class Level:
             self.world_max_x = max(p[0] for p in points)
             self.world_min_y = min(p[1] for p in points)
             self.world_max_y = max(p[1] for p in points)
+        self.terrain_base_lines = roughen_floor_lines(self.base_cave_lines, self.world_max_y, self.name)
+        self.cave_lines = smooth_cave_lines(self.terrain_base_lines, iterations=2)
         self.world_width = self.world_max_x - self.world_min_x
         self.orbit_top_y = self.world_min_y - ORBIT_SCROLL_SPACE
         self.render_width = int(math.ceil(self.world_width))
-        self.render_height = int(math.ceil(self.world_max_y - self.orbit_top_y))
+        terrain_max_y = max(max(start[1], end[1]) for start, end in self.cave_lines)
+        self.render_height = int(math.ceil(terrain_max_y - self.orbit_top_y + 18.0))
         self.star_field = self.build_star_field()
 
         self.turrets = [
             Turret(t["x"], t["y"], t.get("direction", -90), sprites["turret"])
             for t in level_data.get("turrets", [])
+        ]
+        self.gates = [
+            Gate(
+                gate_data["id"],
+                gate_data["x"],
+                gate_data["y"],
+                gate_data.get("width", 28),
+                gate_data.get("height", 180),
+                gate_data.get("slide_dx", 0.0),
+                gate_data.get("slide_dy", 0.0),
+                gate_data.get("open_duration", 3.5),
+                gate_data.get("slide_time", 0.55),
+            )
+            for gate_data in level_data.get("gates", [])
+        ]
+        self.gates_by_id = {gate.gate_id: gate for gate in self.gates}
+        self.switches = [
+            Switch(
+                switch_data["x"],
+                switch_data["y"],
+                switch_data["gate_id"],
+                switch_data.get("radius", 14),
+            )
+            for switch_data in level_data.get("switches", [])
         ]
 
         self.fuel_pods = [
@@ -1580,7 +2107,7 @@ class Level:
         if reactor_data:
             self.reactor = Reactor(reactor_data["x"], reactor_data["y"], sprites["reactor"])
 
-        self.snap_objects_to_flat_surfaces()
+        self.initialize_authored_object_positions()
         self.rocks = self.build_rocks(level_data)
         self.rocks_unlocked = False
         self.tanks = self.build_tanks()
@@ -1624,25 +2151,18 @@ class Level:
 
         return rocks
 
-    def snap_objects_to_flat_surfaces(self):
-        """Place major objects on horizontal terrain and avoid overlaps."""
-        placed = []
-
-        if self.reactor:
-            self.snap_object_to_floor(self.reactor, self.reactor.sprite, placed)
-            placed.append(self.reactor)
-
-        for turret in self.turrets:
-            self.snap_object_to_floor(turret, turret.sprite, placed)
-            placed.append(turret)
-
-        for pod in self.fuel_pods:
-            self.snap_object_to_floor(pod, pod.sprite, placed)
-            placed.append(pod)
-
+    def initialize_authored_object_positions(self):
+        """Respect authored level coordinates instead of re-snapping objects on load."""
         if self.orb:
-            self.snap_object_to_floor(self.orb, self.orb.sprite, placed)
-            placed.append(self.orb)
+            # Level files store the orb's visible position. The plinth anchor sits below it.
+            self.orb.plinth_x = self.orb.x
+            self.orb.plinth_y = self.orb.y + 34.0
+            self.orb.plinth_alive = True
+            self.orb.plinth_hit_points = 5
+            self.orb.plinth_flash_time = 0.0
+            self.orb.vx = 0.0
+            self.orb.vy = 0.0
+            self.orb.resting = True
 
     def build_tanks(self):
         horizontal_lines = []
@@ -1720,6 +2240,7 @@ class Level:
     def snap_object_to_floor(self, obj, sprite, occupied=None):
         half_w = sprite.get_width() * 0.5
         half_h = sprite.get_height() * 0.5
+        floor_offset = getattr(obj, "floor_offset", 0.0)
         best = None
         best_dist = float("inf")
         fallback = None
@@ -1737,7 +2258,7 @@ class Level:
                 continue
 
             cand_x = max(seg_min_x + half_w, min(seg_max_x - half_w, obj.x))
-            cand_y = ay - half_h
+            cand_y = ay - half_h - floor_offset
             dist = math.hypot(cand_x - obj.x, cand_y - obj.y)
             if dist < fallback_dist:
                 fallback_dist = dist
@@ -1762,6 +2283,38 @@ class Level:
             if math.hypot(dx, other.y - cand_y) < (obj_radius + other_radius + 10.0):
                 return True
         return False
+
+    def snap_switch_to_floor(self, switch, occupied=None):
+        best = None
+        best_dist = float("inf")
+        occupied = occupied or []
+
+        for line in self.base_cave_lines:
+            (ax, ay), (bx, by) = line
+            seg_dx = bx - ax
+            seg_dy = by - ay
+            seg_len = math.hypot(seg_dx, seg_dy)
+            if seg_len <= 1e-6:
+                continue
+
+            contact_x, contact_y = closest_point_on_segment(switch.x, switch.y, ax, ay, bx, by)
+            normal_x = -seg_dy / seg_len
+            normal_y = seg_dx / seg_len
+            if normal_y > 0.0:
+                normal_x *= -1.0
+                normal_y *= -1.0
+
+            cand_x = contact_x + normal_x * switch.floor_offset
+            cand_y = contact_y + normal_y * switch.floor_offset
+            dist = math.hypot(cand_x - switch.x, cand_y - switch.y)
+            if self.placement_overlaps(cand_x, cand_y, switch, occupied):
+                continue
+            if dist < best_dist:
+                best_dist = dist
+                best = (cand_x, cand_y)
+
+        if best is not None:
+            switch.x, switch.y = best
 
     def floor_y_beneath(self, x, current_y, radius):
         best_y = None
@@ -1959,6 +2512,10 @@ class Level:
         return False
 
     def update(self, dt):
+        for gate in self.gates:
+            gate.update(dt)
+        for switch in self.switches:
+            switch.update(dt)
         if not self.rocks_unlocked:
             return
         settled = []
@@ -2051,18 +2608,144 @@ class Level:
         (ax, ay), (bx, by) = line
         start = (ax - self.world_min_x, ay - self.orbit_top_y)
         end = (bx - self.world_min_x, by - self.orbit_top_y)
-        pygame.draw.line(surface, (70, 210, 255, 84), start, end, width + 14)
-        pygame.draw.line(surface, (120, 220, 255, 126), start, end, width + 8)
+        pygame.draw.line(surface, (70, 210, 255, 84), start, end, width + 18)
+        pygame.draw.line(surface, (120, 220, 255, 126), start, end, width + 11)
         pygame.draw.line(surface, colour, start, end, width)
 
     def build_terrain_surface(self):
         surface = pygame.Surface((self.render_width + 1, self.render_height + 1), pygame.SRCALPHA)
         for line in self.cave_lines:
-            self.draw_line_to_surface(surface, (120, 220, 255), line, 3)
+            self.draw_line_to_surface(surface, (120, 220, 255), line, 5)
         return surface
 
     def collision_lines(self):
         return list(self.cave_lines)
+
+    def tractor_terrain_blocked(self, start_x, start_y, target_x, target_y, end_clearance=0.0):
+        """True when cave terrain or rocks block the tractor path."""
+        end_x = target_x
+        path_start = (start_x, start_y)
+        path_end = (end_x, target_y)
+        path_length = math.hypot(path_end[0] - path_start[0], path_end[1] - path_start[1])
+
+        for line in self.terrain_base_lines:
+            (ax, ay), (bx, by) = line
+            along = segment_intersection_distance(path_start, path_end, (ax, ay), (bx, by))
+            if along is None:
+                continue
+            if along < max(0.0, path_length - end_clearance):
+                return True
+
+        for rock in self.rocks:
+            if not rock.alive:
+                continue
+            rock_x = rock.x
+            distance = point_to_segment_distance(rock_x, rock.y, path_start[0], path_start[1], path_end[0], path_end[1])
+            if distance >= rock.radius:
+                continue
+            along = (
+                (rock_x - path_start[0]) * (path_end[0] - path_start[0])
+                + (rock.y - path_start[1]) * (path_end[1] - path_start[1])
+            ) / max(path_length, 1e-6)
+            if along < max(0.0, path_length - end_clearance):
+                return True
+
+        for gate in self.gates:
+            for segment in gate.segments(self):
+                along = segment_intersection_distance(path_start, path_end, segment[0], segment[1])
+                if along is not None and along < max(0.0, path_length - end_clearance):
+                    return True
+
+        for switch in self.switches:
+            distance = point_to_segment_distance(switch.x, switch.y, path_start[0], path_start[1], path_end[0], path_end[1])
+            if distance >= switch.radius:
+                continue
+            along = (
+                (switch.x - path_start[0]) * (path_end[0] - path_start[0])
+                + (switch.y - path_start[1]) * (path_end[1] - path_start[1])
+            ) / max(path_length, 1e-6)
+            if along < max(0.0, path_length - end_clearance):
+                return True
+
+        return False
+
+    def tractor_beam_visible_length(self, start_x, start_y, dir_x, dir_y, max_length):
+        """Return how far the tractor beam can be drawn before hitting terrain or rocks."""
+        nearest = max_length
+        end_x = start_x + dir_x * max_length
+        end_y = start_y + dir_y * max_length
+        path_start = (start_x, start_y)
+        path_end = (end_x, end_y)
+
+        for line in self.terrain_base_lines:
+            (ax, ay), (bx, by) = line
+            along = segment_intersection_distance(path_start, path_end, (ax, ay), (bx, by))
+            if along is not None and along < nearest:
+                nearest = along
+
+        path_length = math.hypot(path_end[0] - path_start[0], path_end[1] - path_start[1])
+        for rock in self.rocks:
+            if not rock.alive:
+                continue
+            distance = point_to_segment_distance(rock.x, rock.y, path_start[0], path_start[1], path_end[0], path_end[1])
+            if distance >= rock.radius:
+                continue
+            along = (
+                (rock.x - path_start[0]) * (path_end[0] - path_start[0])
+                + (rock.y - path_start[1]) * (path_end[1] - path_start[1])
+            ) / max(path_length, 1e-6)
+            if 0.0 <= along < nearest:
+                nearest = along
+
+        for gate in self.gates:
+            for segment in gate.segments(self):
+                along = segment_intersection_distance(path_start, path_end, segment[0], segment[1])
+                if along is not None and along < nearest:
+                    nearest = along
+
+        for switch in self.switches:
+            distance = point_to_segment_distance(switch.x, switch.y, path_start[0], path_start[1], path_end[0], path_end[1])
+            if distance >= switch.radius:
+                continue
+            along = (
+                (switch.x - path_start[0]) * (path_end[0] - path_start[0])
+                + (switch.y - path_start[1]) * (path_end[1] - path_start[1])
+            ) / max(path_length, 1e-6)
+            if 0.0 <= along < nearest:
+                nearest = along
+
+        return max(0.0, nearest)
+
+    def tractor_beam_target_length(self, start_x, start_y, dir_x, dir_y, beam_half_width):
+        """Extend beam visuals to the nearest valid reachable target resting on terrain."""
+        nearest = 0.0
+        targets = [pod for pod in self.fuel_pods if pod.fuel_remaining > 0.0]
+        if self.orb and not self.orb.collected:
+            targets.append(self.orb)
+
+        perp_x = -dir_y
+        perp_y = dir_x
+        for target in targets:
+            rel_x = target.x - start_x
+            rel_y = target.y - start_y
+            along = rel_x * dir_x + rel_y * dir_y
+            if along < 0.0 or along > TRACTOR_BEAM_LENGTH:
+                continue
+            width_here = beam_half_width * (0.45 + 0.55 * (1.0 - along / TRACTOR_BEAM_LENGTH))
+            perp = abs(rel_x * perp_x + rel_y * perp_y)
+            if perp > width_here + getattr(target, "radius", 0.0):
+                continue
+            if self.tractor_terrain_blocked(
+                start_x,
+                start_y,
+                target.x,
+                target.y,
+                end_clearance=getattr(target, "radius", 0.0) + 6.0,
+            ):
+                continue
+            nearest = max(nearest, along + getattr(target, "radius", 0.0) * 0.35)
+
+        return nearest
 
     def ship_escaped(self, ship):
         return self.ship_in_orbit(ship)
@@ -2091,6 +2774,12 @@ class Level:
         if self.orb:
             self.orb.draw(screen, camera_x, camera_y, self)
 
+        for gate in self.gates:
+            gate.draw(screen, camera_x, camera_y, self)
+
+        for switch in self.switches:
+            switch.draw(screen, camera_x, camera_y, self, self.gates_by_id.get(switch.gate_id))
+
         for turret in self.turrets:
             turret.draw(screen, camera_x, camera_y, self)
 
@@ -2109,7 +2798,7 @@ class Level:
 # ------------------------------------------------------------
 
 class Game:
-    def __init__(self):
+    def __init__(self, start_level=1, level_file=None):
         pygame.mixer.pre_init(22050, -16, 1, 512)
         pygame.init()
         pygame.display.set_caption(TITLE)
@@ -2127,11 +2816,14 @@ class Game:
             "orb": create_orb_sprite(),
         }
 
-        self.level_paths = sorted(glob.glob("levels/*.json"))
+        if level_file is not None:
+            self.level_paths = [level_file]
+        else:
+            self.level_paths = sorted(glob.glob("levels/*.json"))
         if not self.level_paths:
             raise RuntimeError("No level JSON files found in levels/")
 
-        self.level_index = 0
+        self.level_index = max(0, min(len(self.level_paths) - 1, start_level - 1))
         self.level = None
         self.ship = None
         self.bullets = []
@@ -2147,6 +2839,8 @@ class Game:
         self.pending_next_level_after_destruction = False
         self.pending_orbit_exit_action = None
         self.game_won = False
+        self.score = 0
+        self.next_extra_life_score = EXTRA_LIFE_SCORE
         self.lives = 3
         self.running = True
         self.paused = False
@@ -2358,6 +3052,53 @@ class Game:
                     y,
                     math.cos(angle) * speed,
                     math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+    def spawn_plinth_explosion(self, x, y):
+        self.play_sound("explosion_medium")
+        self.screen_flash_time = max(self.screen_flash_time, 0.18)
+        self.screen_flash_duration = max(self.screen_flash_duration, 0.18)
+
+        for _ in range(42):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(90.0, 240.0)
+            life = random.uniform(0.18, 0.48)
+            self.spark_particles.append(
+                SparkParticle(
+                    x + random.uniform(-10.0, 10.0),
+                    y + random.uniform(-10.0, 10.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
+                    life,
+                )
+            )
+
+        for _ in range(20):
+            angle = random.uniform(-math.pi, 0.1)
+            speed = random.uniform(50.0, 170.0)
+            life = random.uniform(0.20, 0.55)
+            self.flame_particles.append(
+                FlameParticle(
+                    x + random.uniform(-16.0, 16.0),
+                    y + random.uniform(-10.0, 10.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(10.0, 55.0),
+                    life,
+                )
+            )
+
+        for _ in range(16):
+            angle = random.uniform(math.pi * 1.02, math.pi * 1.98)
+            speed = random.uniform(70.0, 220.0)
+            life = random.uniform(0.45, 1.05)
+            self.reactor_debris_particles.append(
+                ReactorDebrisParticle(
+                    x + random.uniform(-12.0, 12.0),
+                    y + random.uniform(-8.0, 8.0),
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed - random.uniform(10.0, 70.0),
                     life,
                 )
             )
@@ -2693,12 +3434,25 @@ class Game:
         self.reactor_debris_particles.clear()
         self.fuel_transfer_particles.clear()
 
+    def add_score(self, points):
+        self.score += points
+        while self.score >= self.next_extra_life_score:
+            self.lives += 1
+            self.next_extra_life_score += EXTRA_LIFE_SCORE
+
+    def award_extra_life(self):
+        self.lives += 1
+
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
 
             if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                    continue
+
                 if event.key == self.controls["pause"]:
                     self.paused = not self.paused
                     continue
@@ -2770,6 +3524,20 @@ class Game:
                     if rock.alive and rock.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                         dx = self.level.wrapped_dx(rock.x, self.ship.x)
                         self.ship_collision_response(dx, self.ship.y - rock.y, other_radius=rock.radius)
+                        break
+
+            if self.ship.alive:
+                for gate in self.level.gates:
+                    if gate.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
+                        dx = self.level.wrapped_dx(gate.x, self.ship.x)
+                        self.ship_collision_response(dx, self.ship.y - gate.y, other_radius=gate.radius)
+                        break
+
+            if self.ship.alive:
+                for switch in self.level.switches:
+                    if switch.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
+                        dx = self.level.wrapped_dx(switch.x, self.ship.x)
+                        self.ship_collision_response(dx, self.ship.y - switch.y, other_radius=switch.radius)
                         break
 
             if self.ship.alive:
@@ -2848,15 +3616,37 @@ class Game:
                             )
                         continue
 
+                for gate in self.level.gates:
+                    if gate.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                        bullet.alive = False
+                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
+                        break
+
+                if not bullet.alive:
+                    continue
+
+                for switch in self.level.switches:
+                    if switch.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                        bullet.alive = False
+                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
+                        if bullet.from_player:
+                            switch.activate(self.level.gates_by_id.get(switch.gate_id))
+                        break
+
+                if not bullet.alive:
+                    continue
+
                 for rock in self.level.rocks:
                     if not rock.alive:
                         continue
                     if rock.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
                         bullet.alive = False
                         self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
-                        rock.apply_hit()
-                        self.level.rocks_unlocked = True
-                        self.spawn_rock_explosion(rock.x, rock.y)
+                        destroyed = rock.apply_hit()
+                        if destroyed:
+                            self.add_score(SCORE_ROCK)
+                            self.level.rocks_unlocked = True
+                            self.spawn_rock_explosion(rock.x, rock.y)
                         break
 
                 if not bullet.alive or not bullet.from_player:
@@ -2870,8 +3660,8 @@ class Game:
                         self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                         destroyed = turret.apply_hit()
                         if destroyed:
+                            self.add_score(SCORE_TURRET)
                             self.spawn_turret_explosion(turret.x, turret.y)
-                            self.lives += 1
                         break
 
                 if not bullet.alive:
@@ -2885,10 +3675,19 @@ class Game:
                         self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                         destroyed = tank.apply_hit()
                         if destroyed:
+                            self.add_score(SCORE_TANK)
                             self.spawn_tank_explosion(tank.x, tank.y)
                         break
 
                 if not bullet.alive:
+                    continue
+
+                if self.level.orb and self.level.orb.plinth_contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                    bullet.alive = False
+                    self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
+                    if self.level.orb.hit_plinth():
+                        self.add_score(SCORE_PLINTH)
+                        self.spawn_plinth_explosion(self.level.orb.plinth_x, self.level.orb.plinth_y + self.level.orb.radius - 12.0)
                     continue
 
                 reactor = self.level.reactor
@@ -2897,6 +3696,8 @@ class Game:
                     self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                     destroyed = reactor.apply_hit()
                     if destroyed:
+                        self.add_score(SCORE_REACTOR)
+                        self.award_extra_life()
                         self.spawn_reactor_explosion(reactor.x, reactor.y)
                         self.escape_timer = REACTOR_ESCAPE_TIME
                     else:
@@ -2971,9 +3772,11 @@ class Game:
         fuel_text = self.font.render(f"Fuel: {int(self.ship.fuel)}", True, (255, 255, 255))
         level_text = self.font.render(self.level.name, True, (255, 255, 255))
         lives_text = self.font.render(f"Lives: {self.lives}", True, (255, 255, 255))
+        score_text = self.font.render(f"Score: {self.score}", True, (255, 230, 140))
         self.screen.blit(fuel_text, (10, 10))
         self.screen.blit(level_text, (10, 40))
         self.screen.blit(lives_text, (10, 70))
+        self.screen.blit(score_text, (10, 100))
 
         if self.level.reactor and self.level.reactor.alive:
             reactor_text = self.font.render(
@@ -2981,19 +3784,19 @@ class Game:
                 True,
                 (255, 220, 120),
             )
-            self.screen.blit(reactor_text, (10, 100))
+            self.screen.blit(reactor_text, (10, 130))
 
         if self.escape_timer is not None and not self.level_destroyed:
             timer_text = self.font.render(f"Escape: {self.escape_timer:0.1f}s", True, (255, 120, 120))
-            self.screen.blit(timer_text, (10, 130))
+            self.screen.blit(timer_text, (10, 160))
             orbit_text = self.font.render("Reactor critical - climb to orbit to escape", True, (120, 255, 120))
-            self.screen.blit(orbit_text, (10, 160))
+            self.screen.blit(orbit_text, (10, 190))
         elif not self.level_destroyed:
             orbit_text = self.font.render("Orbit before reactor breach causes a free respawn", True, (180, 220, 255))
-            self.screen.blit(orbit_text, (10, 130))
+            self.screen.blit(orbit_text, (10, 160))
             shield_key = format_key_binding(self.controls["tractor"])
             shield_text = self.font.render(f"{shield_key}: tractor beam + force field", True, (140, 245, 225))
-            self.screen.blit(shield_text, (10, 160))
+            self.screen.blit(shield_text, (10, 190))
 
         if self.level_destroyed:
             msg = self.font.render("LEVEL SELF-DESTRUCTED", True, (255, 90, 60))
@@ -3093,4 +3896,18 @@ class Game:
 
 
 if __name__ == "__main__":
-    Game().run()
+    parser = argparse.ArgumentParser(description="Run Cave Flyer.")
+    parser.add_argument(
+        "--level",
+        type=int,
+        default=1,
+        help="Level number to start on (1-based).",
+    )
+    parser.add_argument(
+        "--level-file",
+        default=None,
+        help="Path to a specific level JSON file to run directly.",
+    )
+    args = parser.parse_args()
+
+    Game(start_level=args.level, level_file=args.level_file).run()
