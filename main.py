@@ -110,6 +110,12 @@ from settings import (
     STARFIELD_STAR_COUNT,
 )
 
+SOLID_SPATIAL_CELL_SIZE = 160.0
+TRACTOR_BLOCKER_QUERY_PADDING = 120.0
+SHIP_SOLID_KINDS = ("turret", "tank", "rock", "gate", "switch", "fuel_pod", "reactor")
+BULLET_SOLID_KINDS = ("gate", "switch", "rock", "turret", "tank", "reactor")
+TRACTOR_BLOCKER_KINDS = ("rock", "gate", "switch")
+
 # ------------------------------------------------------------
 # Helper functions
 # ------------------------------------------------------------
@@ -282,6 +288,37 @@ def smooth_cave_lines(lines, iterations=2):
     return smoothed_lines
 
 
+def smooth_cave_line_records(records, iterations=2):
+    if not records:
+        return []
+
+    chains = []
+    current_chain = [records[0]]
+    for record in records[1:]:
+        if current_chain[-1]["points"][1] == record["points"][0] and current_chain[-1]["colour"] == record["colour"]:
+            current_chain.append(record)
+        else:
+            chains.append(current_chain)
+            current_chain = [record]
+    chains.append(current_chain)
+
+    smoothed_records = []
+    for chain in chains:
+        segments = [tuple(record["points"]) for record in chain]
+        colour = chain[0]["colour"]
+        if len(segments) == 1 or all(abs(segment[0][1] - segment[1][1]) < 0.01 for segment in segments):
+            smoothed_records.extend({"points": [segment[0], segment[1]], "colour": colour} for segment in segments)
+            continue
+
+        points = [segments[0][0]]
+        points.extend(segment[1] for segment in segments)
+        smoothed_points = chaikin_smooth_points(points, iterations=iterations)
+        for start, end in zip(smoothed_points, smoothed_points[1:]):
+            smoothed_records.append({"points": [start, end], "colour": colour})
+
+    return smoothed_records
+
+
 def roughen_floor_lines(lines, world_max_y, seed_key):
     """Add downward bumps to the lowest horizontal floor segments."""
     if not lines:
@@ -322,6 +359,50 @@ def roughen_floor_lines(lines, world_max_y, seed_key):
         smoothed_points = chaikin_smooth_points(points, iterations=2)
         for start, end in zip(smoothed_points, smoothed_points[1:]):
             roughened.append((start, end))
+
+    return roughened
+
+
+def roughen_floor_line_records(records, world_max_y, seed_key):
+    if not records:
+        return []
+
+    rng = random.Random(f"{seed_key}-floor-roughness")
+    roughened = []
+    floor_threshold = world_max_y - 80.0
+
+    for record in records:
+        (ax, ay), (bx, by) = record["points"]
+        colour = record["colour"]
+        if abs(ay - by) >= 0.01 or ay < floor_threshold:
+            roughened.append({"points": [(ax, ay), (bx, by)], "colour": colour})
+            continue
+
+        line_length = abs(bx - ax)
+        if line_length < 120.0:
+            roughened.append({"points": [(ax, ay), (bx, by)], "colour": colour})
+            continue
+
+        direction = 1.0 if bx >= ax else -1.0
+        span = line_length
+        step = 36.0
+        point_count = max(4, int(span / step))
+        points = []
+        for index in range(point_count + 1):
+            t = index / point_count
+            x = ax + direction * span * t
+            envelope = math.sin(math.pi * t)
+            bump = (
+                math.sin(t * math.tau * rng.randint(2, 4) + rng.uniform(0.0, math.tau)) * 7.0
+                + math.sin(t * math.tau * rng.randint(4, 7) + rng.uniform(0.0, math.tau)) * 3.5
+                + rng.uniform(-2.5, 2.5)
+            )
+            y = ay + max(0.0, bump * envelope + envelope * rng.uniform(5.0, 11.0))
+            points.append((x, y))
+
+        smoothed_points = chaikin_smooth_points(points, iterations=2)
+        for start, end in zip(smoothed_points, smoothed_points[1:]):
+            roughened.append({"points": [start, end], "colour": colour})
 
     return roughened
 
@@ -582,29 +663,45 @@ class Bullet:
         self.distance_travelled = 0.0
 
     def update(self, dt, level):
+        old_x = self.x
+        old_y = self.y
         step_x = self.vx * dt
         step_y = self.vy * dt
-        self.x += step_x
-        self.y += step_y
+        new_x = self.x + step_x
+        new_y = self.y + step_y
         self.distance_travelled += math.hypot(step_x, step_y)
 
-        self.x = level.wrap_x(self.x, self.radius)
         if self.distance_travelled >= BULLET_RANGE:
             self.alive = False
             return
 
         min_x, max_x, min_y, max_y = level.world_bounds()
         if (
-            self.y < min_y - 120
-            or self.y > max_y + 120
+            new_y < min_y - 120
+            or new_y > max_y + 120
         ):
             self.alive = False
             return
 
+        path_start = (old_x, old_y)
+        path_end = (new_x, new_y)
         for line in level.collision_lines():
-            if line_circle_collision(line, self.x, self.y, self.radius):
+            if line_circle_collision(line, new_x, new_y, self.radius):
                 self.alive = False
                 return
+            (ax, ay), (bx, by) = line
+            if segment_intersection_distance(path_start, path_end, (ax, ay), (bx, by)) is not None:
+                self.alive = False
+                return
+            if point_to_segment_distance(ax, ay, old_x, old_y, new_x, new_y) <= self.radius:
+                self.alive = False
+                return
+            if point_to_segment_distance(bx, by, old_x, old_y, new_x, new_y) <= self.radius:
+                self.alive = False
+                return
+
+        self.x = level.wrap_x(new_x, self.radius)
+        self.y = new_y
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
@@ -2038,31 +2135,53 @@ class Rock:
         pygame.draw.circle(screen, (88, 92, 100), (int(mark_x), int(mark_y)), max(1, int(self.radius * 0.25)))
 
 
+def normalize_cave_line_records(lines):
+    records = []
+    for line in lines or []:
+        if isinstance(line, dict):
+            points = line.get("points", [])
+            colour = tuple(line.get("colour", [120, 220, 255]))
+        else:
+            points = line
+            colour = (120, 220, 255)
+        if len(points) != 2:
+            continue
+        records.append({"points": [tuple(points[0]), tuple(points[1])], "colour": colour})
+    return records
+
+
 class Level:
     def __init__(self, level_data, sprites):
         self.name = level_data["name"]
         self.gravity = level_data["gravity"]
         self.background_colour = tuple(level_data.get("background_colour", [0, 0, 0]))
         self.ship_start = tuple(level_data["ship_start"])
-        self.base_cave_lines = [tuple(map(tuple, line)) for line in level_data["cave_lines"]]
+        self.authored_line_records = normalize_cave_line_records(level_data["cave_lines"])
+        self.authored_lines = tuple(tuple(record["points"]) for record in self.authored_line_records)
+        self.terrain_line_records = []
         world_bounds = level_data.get("world_bounds")
 
         if world_bounds:
             self.world_min_x, self.world_max_x, self.world_min_y, self.world_max_y = world_bounds
         else:
             points = []
-            for line in self.base_cave_lines:
+            for line in self.authored_lines:
                 points.extend([line[0], line[1]])
             self.world_min_x = min(p[0] for p in points)
             self.world_max_x = max(p[0] for p in points)
             self.world_min_y = min(p[1] for p in points)
             self.world_max_y = max(p[1] for p in points)
-        self.terrain_base_lines = roughen_floor_lines(self.base_cave_lines, self.world_max_y, self.name)
-        self.cave_lines = smooth_cave_lines(self.terrain_base_lines, iterations=2)
+        self.terrain_line_records = roughen_floor_line_records(self.authored_line_records, self.world_max_y, self.name)
+        self.terrain_line_records = smooth_cave_line_records(self.terrain_line_records, iterations=2)
+        self.terrain_lines = tuple(tuple(record["points"]) for record in self.terrain_line_records)
         self.world_width = self.world_max_x - self.world_min_x
+        self.solid_spatial_cols = max(1, int(math.ceil(max(self.world_width, 1.0) / SOLID_SPATIAL_CELL_SIZE)))
+        self.solid_spatial_index = {}
+        self.terrain_spatial_index = {}
+        self.rebuild_terrain_spatial_index()
         self.orbit_top_y = self.world_min_y - ORBIT_SCROLL_SPACE
         self.render_width = int(math.ceil(self.world_width))
-        terrain_max_y = max(max(start[1], end[1]) for start, end in self.cave_lines)
+        terrain_max_y = max(max(start[1], end[1]) for start, end in self.terrain_lines)
         self.render_height = int(math.ceil(terrain_max_y - self.orbit_top_y + 18.0))
         self.star_field = self.build_star_field()
 
@@ -2110,8 +2229,9 @@ class Level:
         self.initialize_authored_object_positions()
         self.rocks = self.build_rocks(level_data)
         self.rocks_unlocked = False
-        self.tanks = self.build_tanks()
+        self.tanks = self.build_tanks(level_data)
         self.settle_rocks()
+        self.rebuild_solid_spatial_index()
         self.terrain_surface = self.build_terrain_surface()
 
     def build_rocks(self, level_data):
@@ -2164,41 +2284,159 @@ class Level:
             self.orb.vy = 0.0
             self.orb.resting = True
 
-    def build_tanks(self):
-        horizontal_lines = []
-        for line in self.base_cave_lines:
+    def tank_support_line(self, x, y):
+        best_line = None
+        best_dist = float("inf")
+        for line in self.authored_lines:
             (ax, ay), (bx, by) = line
-            if abs(ay - by) < 0.01 and abs(bx - ax) >= 140:
-                horizontal_lines.append(line)
-
-        if not horizontal_lines:
-            return []
-
-        floor_y = max(line[0][1] for line in horizontal_lines)
-        elevated_lines = [line for line in horizontal_lines if line[0][1] < floor_y - 120]
-        tanks = []
-        desired = random.randint(0, TANKS_PER_LEVEL_MAX)
-        attempts = 0
-        forced_elevated = desired > 0 and bool(elevated_lines)
-        while len(tanks) < desired and attempts < 40:
-            attempts += 1
-            if forced_elevated:
-                line = random.choice(elevated_lines)
-            else:
-                line = random.choice(horizontal_lines)
-            (ax, ay), (bx, by) = line
-            min_x = min(ax, bx) + TANK_HALF_WIDTH
-            max_x = max(ax, bx) - TANK_HALF_WIDTH
-            if min_x >= max_x:
+            if abs(ay - by) >= 0.01:
                 continue
-            x = random.uniform(min_x, max_x)
-            y = ay - TANK_HALF_HEIGHT
-            tank = Tank(x, y, line)
+            seg_min_x = min(ax, bx) + TANK_HALF_WIDTH
+            seg_max_x = max(ax, bx) - TANK_HALF_WIDTH
+            if seg_min_x > seg_max_x or not (seg_min_x <= x <= seg_max_x):
+                continue
+            support_y = ay - TANK_HALF_HEIGHT
+            dist = abs(support_y - y)
+            if dist < best_dist:
+                best_dist = dist
+                best_line = line
+        return best_line
+
+    def build_tanks(self, level_data):
+        tanks = []
+        for tank_data in level_data.get("tanks", []):
+            support_line = self.tank_support_line(tank_data["x"], tank_data["y"])
+            if support_line is None:
+                continue
+            tank = Tank(tank_data["x"], tank_data["y"], support_line)
+            tank.x = tank_data["x"]
+            tank.y = tank_data["y"]
             if self.position_conflicts(tank, tanks):
                 continue
             tanks.append(tank)
-            forced_elevated = False
         return tanks
+
+    def _solid_x_cells(self, x, radius):
+        if self.world_width <= 0.0:
+            start = int(math.floor((x - radius - self.world_min_x) / SOLID_SPATIAL_CELL_SIZE))
+            end = int(math.floor((x + radius - self.world_min_x) / SOLID_SPATIAL_CELL_SIZE))
+            return list(range(start, end + 1))
+
+        local_x = (x - self.world_min_x) % self.world_width
+        start = int(math.floor((local_x - radius) / SOLID_SPATIAL_CELL_SIZE))
+        end = int(math.floor((local_x + radius) / SOLID_SPATIAL_CELL_SIZE))
+        return sorted({cell % self.solid_spatial_cols for cell in range(start, end + 1)})
+
+    def _solid_y_cells(self, y, radius):
+        start = int(math.floor((y - radius - self.world_min_y) / SOLID_SPATIAL_CELL_SIZE))
+        end = int(math.floor((y + radius - self.world_min_y) / SOLID_SPATIAL_CELL_SIZE))
+        return range(start, end + 1)
+
+    def _bbox_cells(self, min_x, max_x, min_y, max_y):
+        start_col = int(math.floor((min_x - self.world_min_x) / SOLID_SPATIAL_CELL_SIZE))
+        end_col = int(math.floor((max_x - self.world_min_x) / SOLID_SPATIAL_CELL_SIZE))
+        start_row = int(math.floor((min_y - self.world_min_y) / SOLID_SPATIAL_CELL_SIZE))
+        end_row = int(math.floor((max_y - self.world_min_y) / SOLID_SPATIAL_CELL_SIZE))
+        return start_col, end_col, start_row, end_row
+
+    def _register_solid(self, kind, obj, x, y, radius):
+        for row in self._solid_y_cells(y, radius):
+            for col in self._solid_x_cells(x, radius):
+                self.solid_spatial_index.setdefault((col, row), []).append((kind, obj))
+
+    def rebuild_solid_spatial_index(self):
+        self.solid_spatial_index = {}
+
+        for turret in self.turrets:
+            if turret.alive:
+                self._register_solid("turret", turret, turret.x, turret.y, turret.radius)
+
+        for tank in self.tanks:
+            if tank.alive:
+                self._register_solid("tank", tank, tank.x, tank.y, tank.radius)
+
+        for rock in self.rocks:
+            if rock.alive:
+                self._register_solid("rock", rock, rock.x, rock.y, rock.radius)
+
+        for gate in self.gates:
+            self._register_solid("gate", gate, gate.x, gate.y, gate.radius)
+
+        for switch in self.switches:
+            self._register_solid("switch", switch, switch.x, switch.y, switch.radius)
+
+        for fuel_pod in self.fuel_pods:
+            if fuel_pod.fuel_remaining > 0.0:
+                self._register_solid("fuel_pod", fuel_pod, fuel_pod.x, fuel_pod.y, fuel_pod.radius)
+
+        if self.reactor and self.reactor.alive:
+            self._register_solid("reactor", self.reactor, self.reactor.x, self.reactor.y, self.reactor.radius)
+
+    def rebuild_terrain_spatial_index(self):
+        self.terrain_spatial_index = {}
+        for line in self.terrain_lines:
+            (ax, ay), (bx, by) = line
+            min_x = min(ax, bx)
+            max_x = max(ax, bx)
+            min_y = min(ay, by)
+            max_y = max(ay, by)
+            start_col, end_col, start_row, end_row = self._bbox_cells(min_x, max_x, min_y, max_y)
+            for row in range(start_row, end_row + 1):
+                for col in range(start_col, end_col + 1):
+                    self.terrain_spatial_index.setdefault((col, row), []).append(line)
+
+    def nearby_solids(self, x, y, radius, kinds=None):
+        result = {kind: [] for kind in kinds} if kinds is not None else {}
+        seen = set()
+        for row in self._solid_y_cells(y, radius):
+            for col in self._solid_x_cells(x, radius):
+                for kind, obj in self.solid_spatial_index.get((col, row), ()):
+                    if kinds is not None and kind not in kinds:
+                        continue
+                    key = (kind, id(obj))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    result.setdefault(kind, []).append(obj)
+        return result
+
+    def solids_in_bounds(self, min_x, max_x, min_y, max_y, kinds=None):
+        result = {kind: [] for kind in kinds} if kinds is not None else {}
+        seen = set()
+        start_col, end_col, start_row, end_row = self._bbox_cells(min_x, max_x, min_y, max_y)
+        for row in range(start_row, end_row + 1):
+            for col in range(start_col, end_col + 1):
+                for kind, obj in self.solid_spatial_index.get((col, row), ()):
+                    if kinds is not None and kind not in kinds:
+                        continue
+                    key = (kind, id(obj))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    result.setdefault(kind, []).append(obj)
+        return result
+
+    def terrain_lines_in_bounds(self, min_x, max_x, min_y, max_y):
+        lines = []
+        seen = set()
+        start_col, end_col, start_row, end_row = self._bbox_cells(min_x, max_x, min_y, max_y)
+        for row in range(start_row, end_row + 1):
+            for col in range(start_col, end_col + 1):
+                for line in self.terrain_spatial_index.get((col, row), ()):
+                    key = id(line)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    lines.append(line)
+        return lines
+
+    def tractor_blocker_bounds(self, start_x, start_y, end_x, end_y, padding=0.0):
+        return (
+            min(start_x, end_x) - padding,
+            max(start_x, end_x) + padding,
+            min(start_y, end_y) - padding,
+            max(start_y, end_y) + padding,
+        )
 
     def position_conflicts(self, obj, existing_tanks):
         for tank in existing_tanks:
@@ -2247,7 +2485,7 @@ class Level:
         fallback_dist = float("inf")
         occupied = occupied or []
 
-        for line in self.base_cave_lines:
+        for line in self.authored_lines:
             (ax, ay), (bx, by) = line
             if abs(ay - by) >= 0.01:
                 continue
@@ -2289,7 +2527,7 @@ class Level:
         best_dist = float("inf")
         occupied = occupied or []
 
-        for line in self.base_cave_lines:
+        for line in self.authored_lines:
             (ax, ay), (bx, by) = line
             seg_dx = bx - ax
             seg_dy = by - ay
@@ -2319,7 +2557,7 @@ class Level:
     def floor_y_beneath(self, x, current_y, radius):
         best_y = None
         wrapped_x = self.wrap_x(x, radius)
-        for line in self.base_cave_lines:
+        for line in self.authored_lines:
             (ax, ay), (bx, by) = line
             if abs(ay - by) >= 0.01:
                 continue
@@ -2359,7 +2597,7 @@ class Level:
         best_obj = None
         radius = rock.radius
 
-        for line in self.base_cave_lines:
+        for line in self.authored_lines:
             (ax, ay), (bx, by) = line
             if abs(ay - by) >= 0.01:
                 continue
@@ -2517,11 +2755,13 @@ class Level:
         for switch in self.switches:
             switch.update(dt)
         if not self.rocks_unlocked:
+            self.rebuild_solid_spatial_index()
             return
         settled = []
         for rock in sorted((rock for rock in self.rocks if rock.alive), key=lambda rock: (rock.y, rock.x), reverse=True):
             rock.update(dt, self, settled)
             settled.append(rock)
+        self.rebuild_solid_spatial_index()
 
     def world_bounds(self):
         return (self.world_min_x, self.world_max_x, self.world_min_y, self.world_max_y)
@@ -2608,55 +2848,72 @@ class Level:
         (ax, ay), (bx, by) = line
         start = (ax - self.world_min_x, ay - self.orbit_top_y)
         end = (bx - self.world_min_x, by - self.orbit_top_y)
-        pygame.draw.line(surface, (70, 210, 255, 84), start, end, width + 18)
-        pygame.draw.line(surface, (120, 220, 255, 126), start, end, width + 11)
+        glow_outer = (
+            min(255, int(colour[0] * 0.58 + 18)),
+            min(255, int(colour[1] * 0.58 + 18)),
+            min(255, int(colour[2] * 0.58 + 18)),
+            84,
+        )
+        glow_inner = (
+            min(255, int(colour[0] * 0.78 + 28)),
+            min(255, int(colour[1] * 0.78 + 28)),
+            min(255, int(colour[2] * 0.78 + 28)),
+            126,
+        )
+        pygame.draw.line(surface, glow_outer, start, end, width + 18)
+        pygame.draw.line(surface, glow_inner, start, end, width + 11)
         pygame.draw.line(surface, colour, start, end, width)
 
     def build_terrain_surface(self):
         surface = pygame.Surface((self.render_width + 1, self.render_height + 1), pygame.SRCALPHA)
-        for line in self.cave_lines:
-            self.draw_line_to_surface(surface, (120, 220, 255), line, 5)
+        for record in self.terrain_line_records:
+            self.draw_line_to_surface(surface, record["colour"], tuple(record["points"]), 5)
         return surface
 
     def collision_lines(self):
-        return list(self.cave_lines)
+        return self.terrain_lines
 
     def tractor_terrain_blocked(self, start_x, start_y, target_x, target_y, end_clearance=0.0):
-        """True when cave terrain or rocks block the tractor path."""
-        end_x = target_x
+        """True when cave terrain or solid blockers interrupt the tractor path."""
         path_start = (start_x, start_y)
-        path_end = (end_x, target_y)
+        path_end = (target_x, target_y)
         path_length = math.hypot(path_end[0] - path_start[0], path_end[1] - path_start[1])
+        blocker_limit = max(0.0, path_length - end_clearance)
+        min_x, max_x, min_y, max_y = self.tractor_blocker_bounds(
+            start_x,
+            start_y,
+            target_x,
+            target_y,
+            padding=TRACTOR_BLOCKER_QUERY_PADDING,
+        )
 
-        for line in self.terrain_base_lines:
+        for line in self.terrain_lines_in_bounds(min_x, max_x, min_y, max_y):
             (ax, ay), (bx, by) = line
             along = segment_intersection_distance(path_start, path_end, (ax, ay), (bx, by))
-            if along is None:
-                continue
-            if along < max(0.0, path_length - end_clearance):
+            if along is not None and along < blocker_limit:
                 return True
 
-        for rock in self.rocks:
+        nearby = self.solids_in_bounds(min_x, max_x, min_y, max_y, kinds=TRACTOR_BLOCKER_KINDS)
+        for rock in nearby.get("rock", ()):
             if not rock.alive:
                 continue
-            rock_x = rock.x
-            distance = point_to_segment_distance(rock_x, rock.y, path_start[0], path_start[1], path_end[0], path_end[1])
+            distance = point_to_segment_distance(rock.x, rock.y, path_start[0], path_start[1], path_end[0], path_end[1])
             if distance >= rock.radius:
                 continue
             along = (
-                (rock_x - path_start[0]) * (path_end[0] - path_start[0])
+                (rock.x - path_start[0]) * (path_end[0] - path_start[0])
                 + (rock.y - path_start[1]) * (path_end[1] - path_start[1])
             ) / max(path_length, 1e-6)
-            if along < max(0.0, path_length - end_clearance):
+            if along < blocker_limit:
                 return True
 
-        for gate in self.gates:
+        for gate in nearby.get("gate", ()):
             for segment in gate.segments(self):
                 along = segment_intersection_distance(path_start, path_end, segment[0], segment[1])
-                if along is not None and along < max(0.0, path_length - end_clearance):
+                if along is not None and along < blocker_limit:
                     return True
 
-        for switch in self.switches:
+        for switch in nearby.get("switch", ()):
             distance = point_to_segment_distance(switch.x, switch.y, path_start[0], path_start[1], path_end[0], path_end[1])
             if distance >= switch.radius:
                 continue
@@ -2664,27 +2921,35 @@ class Level:
                 (switch.x - path_start[0]) * (path_end[0] - path_start[0])
                 + (switch.y - path_start[1]) * (path_end[1] - path_start[1])
             ) / max(path_length, 1e-6)
-            if along < max(0.0, path_length - end_clearance):
+            if along < blocker_limit:
                 return True
 
         return False
 
     def tractor_beam_visible_length(self, start_x, start_y, dir_x, dir_y, max_length):
-        """Return how far the tractor beam can be drawn before hitting terrain or rocks."""
+        """Return how far the tractor beam can be drawn before hitting terrain or solid blockers."""
         nearest = max_length
         end_x = start_x + dir_x * max_length
         end_y = start_y + dir_y * max_length
         path_start = (start_x, start_y)
         path_end = (end_x, end_y)
+        path_length = math.hypot(path_end[0] - path_start[0], path_end[1] - path_start[1])
+        min_x, max_x, min_y, max_y = self.tractor_blocker_bounds(
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            padding=TRACTOR_BLOCKER_QUERY_PADDING,
+        )
 
-        for line in self.terrain_base_lines:
+        for line in self.terrain_lines_in_bounds(min_x, max_x, min_y, max_y):
             (ax, ay), (bx, by) = line
             along = segment_intersection_distance(path_start, path_end, (ax, ay), (bx, by))
             if along is not None and along < nearest:
                 nearest = along
 
-        path_length = math.hypot(path_end[0] - path_start[0], path_end[1] - path_start[1])
-        for rock in self.rocks:
+        nearby = self.solids_in_bounds(min_x, max_x, min_y, max_y, kinds=TRACTOR_BLOCKER_KINDS)
+        for rock in nearby.get("rock", ()):
             if not rock.alive:
                 continue
             distance = point_to_segment_distance(rock.x, rock.y, path_start[0], path_start[1], path_end[0], path_end[1])
@@ -2697,13 +2962,13 @@ class Level:
             if 0.0 <= along < nearest:
                 nearest = along
 
-        for gate in self.gates:
+        for gate in nearby.get("gate", ()):
             for segment in gate.segments(self):
                 along = segment_intersection_distance(path_start, path_end, segment[0], segment[1])
                 if along is not None and along < nearest:
                     nearest = along
 
-        for switch in self.switches:
+        for switch in nearby.get("switch", ()):
             distance = point_to_segment_distance(switch.x, switch.y, path_start[0], path_start[1], path_end[0], path_end[1])
             if distance >= switch.radius:
                 continue
@@ -3376,9 +3641,95 @@ class Game:
             return
         self.destroy_ship(lose_life=lose_life)
 
+    def handle_ship_solid_collisions(self, ship_collision_radius):
+        nearby = self.level.nearby_solids(self.ship.x, self.ship.y, ship_collision_radius, kinds=SHIP_SOLID_KINDS)
+        for kind in SHIP_SOLID_KINDS:
+            for solid in nearby.get(kind, ()): 
+                if getattr(solid, "alive", True) is False:
+                    continue
+                if kind == "fuel_pod" and solid.fuel_remaining <= 0.0:
+                    continue
+                if not solid.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
+                    continue
+                dx = self.level.wrapped_dx(solid.x, self.ship.x)
+                self.ship_collision_response(dx, self.ship.y - solid.y, other_radius=solid.radius)
+                return True
+        return False
+
+    def handle_bullet_solid_collision(self, bullet):
+        nearby = self.level.nearby_solids(bullet.x, bullet.y, bullet.radius, kinds=BULLET_SOLID_KINDS)
+
+        for gate in nearby.get("gate", ()):
+            if gate.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                bullet.alive = False
+                self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
+                return True
+
+        for switch in nearby.get("switch", ()):
+            if not switch.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                continue
+            bullet.alive = False
+            self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
+            if bullet.from_player:
+                switch.activate(self.level.gates_by_id.get(switch.gate_id))
+            return True
+
+        for rock in nearby.get("rock", ()):
+            if not rock.alive or not rock.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                continue
+            bullet.alive = False
+            self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
+            destroyed = rock.apply_hit()
+            if destroyed:
+                self.add_score(SCORE_ROCK)
+                self.level.rocks_unlocked = True
+                self.spawn_rock_explosion(rock.x, rock.y)
+            return True
+
+        if not bullet.from_player:
+            return False
+
+        for turret in nearby.get("turret", ()):
+            if not turret.alive or not turret.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                continue
+            bullet.alive = False
+            self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
+            destroyed = turret.apply_hit()
+            if destroyed:
+                self.add_score(SCORE_TURRET)
+                self.spawn_turret_explosion(turret.x, turret.y)
+            return True
+
+        for tank in nearby.get("tank", ()):
+            if not tank.alive or not tank.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                continue
+            bullet.alive = False
+            self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
+            destroyed = tank.apply_hit()
+            if destroyed:
+                self.add_score(SCORE_TANK)
+                self.spawn_tank_explosion(tank.x, tank.y)
+            return True
+
+        reactor = self.level.reactor
+        if reactor and reactor.alive and reactor in nearby.get("reactor", ()) and reactor.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+            bullet.alive = False
+            self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
+            destroyed = reactor.apply_hit()
+            if destroyed:
+                self.add_score(SCORE_REACTOR)
+                self.award_extra_life()
+                self.spawn_reactor_explosion(reactor.x, reactor.y)
+                self.escape_timer = REACTOR_ESCAPE_TIME
+            else:
+                self.spawn_reactor_hit_sparks(reactor.x, reactor.y)
+            return True
+
+        return False
+
     def random_level_point(self):
-        if self.level.cave_lines and random.random() < 0.7:
-            (ax, ay), (bx, by) = random.choice(self.level.cave_lines)
+        if self.level.terrain_lines and random.random() < 0.7:
+            (ax, ay), (bx, by) = random.choice(self.level.terrain_lines)
             t = random.random()
             return (ax + (bx - ax) * t, ay + (by - ay) * t)
         min_x, max_x, min_y, max_y = self.level.world_bounds()
@@ -3506,51 +3857,7 @@ class Game:
                 self.destroy_ship()
 
             if self.ship.alive:
-                for turret in self.level.turrets:
-                    if turret.alive and turret.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                        dx = self.level.wrapped_dx(turret.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - turret.y, other_radius=turret.radius)
-                        break
-
-            if self.ship.alive:
-                for tank in self.level.tanks:
-                    if tank.alive and tank.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                        dx = self.level.wrapped_dx(tank.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - tank.y, other_radius=tank.radius)
-                        break
-
-            if self.ship.alive:
-                for rock in self.level.rocks:
-                    if rock.alive and rock.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                        dx = self.level.wrapped_dx(rock.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - rock.y, other_radius=rock.radius)
-                        break
-
-            if self.ship.alive:
-                for gate in self.level.gates:
-                    if gate.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                        dx = self.level.wrapped_dx(gate.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - gate.y, other_radius=gate.radius)
-                        break
-
-            if self.ship.alive:
-                for switch in self.level.switches:
-                    if switch.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                        dx = self.level.wrapped_dx(switch.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - switch.y, other_radius=switch.radius)
-                        break
-
-            if self.ship.alive:
-                for fuel_pod in self.level.fuel_pods:
-                    if fuel_pod.fuel_remaining > 0.0 and fuel_pod.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                        dx = self.level.wrapped_dx(fuel_pod.x, self.ship.x)
-                        self.ship_collision_response(dx, self.ship.y - fuel_pod.y, other_radius=fuel_pod.radius)
-                        break
-
-            reactor = self.level.reactor
-            if self.ship.alive and reactor and reactor.alive and reactor.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
-                dx = self.level.wrapped_dx(reactor.x, self.ship.x)
-                self.ship_collision_response(dx, self.ship.y - reactor.y, other_radius=reactor.radius)
+                self.handle_ship_solid_collisions(ship_collision_radius)
 
         if self.ship.is_operational() and self.ship.thrusting and not self.level_destroyed:
             base_left, base_right = self.ship.get_base_points()
@@ -3616,92 +3923,16 @@ class Game:
                             )
                         continue
 
-                for gate in self.level.gates:
-                    if gate.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
-                        bullet.alive = False
-                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
-                        break
-
-                if not bullet.alive:
+                if self.handle_bullet_solid_collision(bullet):
                     continue
 
-                for switch in self.level.switches:
-                    if switch.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
-                        bullet.alive = False
-                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=bullet.from_player)
-                        if bullet.from_player:
-                            switch.activate(self.level.gates_by_id.get(switch.gate_id))
-                        break
-
-                if not bullet.alive:
-                    continue
-
-                for rock in self.level.rocks:
-                    if not rock.alive:
-                        continue
-                    if rock.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
-                        bullet.alive = False
-                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
-                        destroyed = rock.apply_hit()
-                        if destroyed:
-                            self.add_score(SCORE_ROCK)
-                            self.level.rocks_unlocked = True
-                            self.spawn_rock_explosion(rock.x, rock.y)
-                        break
-
-                if not bullet.alive or not bullet.from_player:
-                    continue
-
-                for turret in self.level.turrets:
-                    if not turret.alive:
-                        continue
-                    if turret.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
-                        bullet.alive = False
-                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
-                        destroyed = turret.apply_hit()
-                        if destroyed:
-                            self.add_score(SCORE_TURRET)
-                            self.spawn_turret_explosion(turret.x, turret.y)
-                        break
-
-                if not bullet.alive:
-                    continue
-
-                for tank in self.level.tanks:
-                    if not tank.alive:
-                        continue
-                    if tank.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
-                        bullet.alive = False
-                        self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
-                        destroyed = tank.apply_hit()
-                        if destroyed:
-                            self.add_score(SCORE_TANK)
-                            self.spawn_tank_explosion(tank.x, tank.y)
-                        break
-
-                if not bullet.alive:
-                    continue
-
-                if self.level.orb and self.level.orb.plinth_contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                if self.level.orb and bullet.from_player and self.level.orb.plinth_contains_point(bullet.x, bullet.y, bullet.radius, self.level):
                     bullet.alive = False
                     self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
                     if self.level.orb.hit_plinth():
                         self.add_score(SCORE_PLINTH)
                         self.spawn_plinth_explosion(self.level.orb.plinth_x, self.level.orb.plinth_y + self.level.orb.radius - 12.0)
                     continue
-
-                reactor = self.level.reactor
-                if reactor and reactor.alive and reactor.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
-                    bullet.alive = False
-                    self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
-                    destroyed = reactor.apply_hit()
-                    if destroyed:
-                        self.add_score(SCORE_REACTOR)
-                        self.award_extra_life()
-                        self.spawn_reactor_explosion(reactor.x, reactor.y)
-                        self.escape_timer = REACTOR_ESCAPE_TIME
-                    else:
-                        self.spawn_reactor_hit_sparks(reactor.x, reactor.y)
 
         if self.escape_timer is not None and not self.level_destroyed and self.level.ship_escaped(self.ship):
             self.begin_orbit_exit("advance")

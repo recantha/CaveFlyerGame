@@ -18,10 +18,11 @@ except ImportError:
     filedialog = None
 
 
-SCREEN_WIDTH = 1400
-SCREEN_HEIGHT = 900
+SCREEN_WIDTH = 1600
+SCREEN_HEIGHT = 800
+LEFT_PANEL_WIDTH = 260
 SIDEBAR_WIDTH = 320
-CANVAS_WIDTH = SCREEN_WIDTH - SIDEBAR_WIDTH
+CANVAS_WIDTH = SCREEN_WIDTH - SIDEBAR_WIDTH - LEFT_PANEL_WIDTH
 BG_COLOUR = (12, 14, 22)
 GRID_COLOUR = (28, 34, 46)
 TEXT_COLOUR = (226, 232, 244)
@@ -44,6 +45,15 @@ REACTOR_SPRITE_HEIGHT = 60
 SWITCH_FLOOR_OFFSET = 18.0
 ORB_PLINTH_HEIGHT = 54.0
 LINE_ENDPOINT_SNAP_DISTANCE = 18.0
+CAVE_LINE_PALETTE = [
+    (110, 214, 255),
+    (255, 200, 120),
+    (160, 255, 160),
+    (255, 140, 140),
+    (220, 160, 255),
+    (255, 255, 160),
+]
+DEFAULT_CAVE_LINE_COLOUR = CAVE_LINE_PALETTE[0]
 
 TOOLS = [
     ("select", "1 Select"),
@@ -54,6 +64,7 @@ TOOLS = [
     ("orb", "6 Orb"),
     ("reactor", "7 Reactor"),
     ("rock", "8 Rock"),
+    ("tank", "T Tank"),
     ("gate", "9 Gate"),
     ("switch", "0 Switch"),
 ]
@@ -67,6 +78,7 @@ TOOL_KEYS = {
     pygame.K_6: "orb",
     pygame.K_7: "reactor",
     pygame.K_8: "rock",
+    pygame.K_t: "tank",
     pygame.K_9: "gate",
     pygame.K_0: "switch",
 }
@@ -115,6 +127,36 @@ def world_distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def normalize_cave_lines(lines):
+    normalized = []
+    for line in lines or []:
+        if isinstance(line, dict):
+            points = line.get("points", [])
+            colour = line.get("colour", DEFAULT_CAVE_LINE_COLOUR)
+        else:
+            points = line
+            colour = DEFAULT_CAVE_LINE_COLOUR
+        if len(points) != 2:
+            continue
+        normalized.append({
+            "points": [
+                [round(points[0][0], 1), round(points[0][1], 1)],
+                [round(points[1][0], 1), round(points[1][1], 1)],
+            ],
+            "colour": list(colour),
+        })
+    return normalized
+
+
+def line_points(line):
+    return line["points"]
+
+
+def line_colour(line):
+    colour = line.get("colour", DEFAULT_CAVE_LINE_COLOUR)
+    return tuple(colour)
+
+
 def default_level():
     return {
         "name": "Untitled",
@@ -129,6 +171,7 @@ def default_level():
         "fuel_pods": [],
         "orb": None,
         "rocks": [],
+        "tanks": [],
         "rock_piles": [],
         "reactor": None,
     }
@@ -200,6 +243,8 @@ class LevelEditor:
         self.active_text_field = None
         self.minimap_rect = None
         self.show_level_list = False
+        self.current_line_colour = DEFAULT_CAVE_LINE_COLOUR
+        self.line_paint_mode = False
         self.center_camera()
 
     def default_save_name(self, path):
@@ -238,6 +283,7 @@ class LevelEditor:
             "turret": "turrets",
             "fuel_pod": "fuel_pods",
             "rock": "rocks",
+            "tank": "tanks",
             "gate": "gates",
             "switch": "switches",
         }
@@ -249,11 +295,13 @@ class LevelEditor:
         else:
             data = default_level()
         data = expand_rock_piles(data)
+        data["cave_lines"] = normalize_cave_lines(data.get("cave_lines", []))
         data.setdefault("turrets", [])
         data.setdefault("gates", [])
         data.setdefault("switches", [])
         data.setdefault("fuel_pods", [])
         data.setdefault("rocks", [])
+        data.setdefault("tanks", [])
         data.setdefault("rock_piles", [])
         data.setdefault("orb", None)
         data.setdefault("reactor", None)
@@ -277,11 +325,14 @@ class LevelEditor:
         os.makedirs(levels_dir, exist_ok=True)
         root = tk.Tk()
         root.withdraw()
-        root.attributes("-topmost", True)
+        root.update_idletasks()
+        root.lift()
+        root.focus_force()
+        pygame.event.set_grab(False)
+        pygame.mouse.set_visible(True)
         initial_name = self.default_save_name(self.path or self.save_as_name)
         initial_file = initial_name if initial_name.lower().endswith(".json") else f"{initial_name}.json"
         selected = filedialog.asksaveasfilename(
-            parent=root,
             title="Save Level As",
             initialdir=levels_dir,
             initialfile=initial_file,
@@ -303,6 +354,13 @@ class LevelEditor:
             self.level_paths.sort()
         self.save()
 
+    def load_with_dialog(self):
+        if self.unsaved:
+            self.status = "Save current level before loading another"
+            return
+        self.show_level_list = True
+        self.status = "Choose a level to load"
+
     def new_level(self):
         if self.unsaved:
             self.status = "Save current level before creating a new one"
@@ -319,6 +377,8 @@ class LevelEditor:
         self.save_as_name = "new_level"
         self.active_gate_id = None
         self.show_level_list = False
+        self.current_line_colour = DEFAULT_CAVE_LINE_COLOUR
+        self.line_paint_mode = False
         self.center_camera()
         self.status = "Created new unsaved level"
 
@@ -351,17 +411,17 @@ class LevelEditor:
         self.camera_y = (min_y + max_y) * 0.5
 
     def world_to_screen(self, point):
-        x = (point[0] - self.camera_x) * self.zoom + CANVAS_WIDTH * 0.5
+        x = (point[0] - self.camera_x) * self.zoom + LEFT_PANEL_WIDTH + CANVAS_WIDTH * 0.5
         y = (point[1] - self.camera_y) * self.zoom + SCREEN_HEIGHT * 0.5
         return x, y
 
     def screen_to_world(self, point):
-        x = (point[0] - CANVAS_WIDTH * 0.5) / self.zoom + self.camera_x
+        x = (point[0] - LEFT_PANEL_WIDTH - CANVAS_WIDTH * 0.5) / self.zoom + self.camera_x
         y = (point[1] - SCREEN_HEIGHT * 0.5) / self.zoom + self.camera_y
         return x, y
 
     def canvas_contains(self, screen_pos):
-        return 0 <= screen_pos[0] < CANVAS_WIDTH and 0 <= screen_pos[1] < SCREEN_HEIGHT
+        return LEFT_PANEL_WIDTH <= screen_pos[0] < (LEFT_PANEL_WIDTH + CANVAS_WIDTH) and 0 <= screen_pos[1] < SCREEN_HEIGHT
 
     def next_gate_id(self):
         used = {gate["id"] for gate in self.level["gates"]}
@@ -382,11 +442,21 @@ class LevelEditor:
                 nearest_id = gate["id"]
         return nearest_id
 
+    def line_hit_test(self, world_pos):
+        for index in range(len(self.level["cave_lines"]) - 1, -1, -1):
+            points = line_points(self.level["cave_lines"][index])
+            if point_segment_distance(world_pos[0], world_pos[1], points[0][0], points[0][1], points[1][0], points[1][1]) <= 8.0 / self.zoom:
+                return index
+        return None
+
+    def set_line_colour(self, line_index, colour):
+        self.level["cave_lines"][line_index]["colour"] = list(colour)
+
     def snap_line_endpoint(self, world_pos, exclude=None):
         best_point = None
         best_dist = LINE_ENDPOINT_SNAP_DISTANCE
         for line_index, line in enumerate(self.level["cave_lines"]):
-            for point_index, point in enumerate(line):
+            for point_index, point in enumerate(line_points(line)):
                 if exclude == (line_index, point_index):
                     continue
                 dist = math.hypot(point[0] - world_pos[0], point[1] - world_pos[1])
@@ -400,7 +470,7 @@ class LevelEditor:
         best = None
         best_y = float("inf")
         for line in self.level["cave_lines"]:
-            (ax, ay), (bx, by) = line
+            (ax, ay), (bx, by) = line_points(line)
             if require_horizontal and abs(ay - by) >= 0.01:
                 continue
             seg_min_x = min(ax, bx)
@@ -558,10 +628,11 @@ class LevelEditor:
             return f"Reactor ({int(reactor['x'])}, {int(reactor['y'])})"
         if kind == "line":
             line = self.level["cave_lines"][self.selected[1]]
-            return f"Line {self.selected[1]} {tuple(map(int, line[0]))}->{tuple(map(int, line[1]))}"
+            points = line_points(line)
+            return f"Line {self.selected[1]} {tuple(map(int, points[0]))}->{tuple(map(int, points[1]))}"
         if kind == "line_point":
             line = self.level["cave_lines"][self.selected[1]]
-            point = line[self.selected[2]]
+            point = line_points(line)[self.selected[2]]
             return f"Line Pt ({int(point[0])}, {int(point[1])})"
         container = self.level[self.collection_key(kind)]
         item = container[self.selected[1]]
@@ -576,13 +647,18 @@ class LevelEditor:
     def hit_test(self, world_pos):
         px, py = world_pos
         for index, line in enumerate(self.level["cave_lines"]):
-            for point_index, point in enumerate(line):
+            for point_index, point in enumerate(line_points(line)):
                 if world_distance(point, world_pos) <= 12.0 / self.zoom:
                     return ("line_point", index, point_index)
+
+        line_index = self.line_hit_test(world_pos)
+        if line_index is not None:
+            return ("line", line_index)
 
         object_kinds = [
             "switch",
             "gate",
+            "tank",
             "turret",
             "fuel_pod",
             "rock",
@@ -594,6 +670,9 @@ class LevelEditor:
                 if kind in ("turret", "fuel_pod", "switch"):
                     radius = 18 if kind != "switch" else 16
                     if math.hypot(item["x"] - px, item["y"] - py) <= radius / self.zoom + 8:
+                        return (kind, index)
+                elif kind == "tank":
+                    if rect_hit(px, py, item["x"], item["y"], 28.0, 16.0):
                         return (kind, index)
                 elif kind == "rock":
                     radius = item.get("diameter", 20) * 0.5
@@ -618,7 +697,8 @@ class LevelEditor:
         nearest_line = None
         nearest_dist = float("inf")
         for index, line in enumerate(self.level["cave_lines"]):
-            dist = point_segment_distance(px, py, line[0][0], line[0][1], line[1][0], line[1][1])
+            points = line_points(line)
+            dist = point_segment_distance(px, py, points[0][0], points[0][1], points[1][0], points[1][1])
             if dist < nearest_dist:
                 nearest_dist = dist
                 nearest_line = index
@@ -714,18 +794,17 @@ class LevelEditor:
         elif name == "reload":
             self.open_level(self.path)
             self.status = "Reloaded level from disk"
-        elif name == "toggle_level_list":
-            if self.unsaved:
-                self.status = "Save current level before loading another"
-            else:
-                self.show_level_list = not self.show_level_list
-                self.status = "Level list opened" if self.show_level_list else "Level list closed"
+        elif name == "load_dialog":
+            self.load_with_dialog()
         elif name == "load_level":
             if self.unsaved:
                 self.status = "Save current level before loading another"
             else:
                 self.open_level(action[1])
                 self.show_level_list = False
+        elif name == "close_load_dialog":
+            self.show_level_list = False
+            self.status = "Load cancelled"
         elif name == "delete_selected":
             self.delete_selected()
         elif name == "center_camera":
@@ -738,6 +817,9 @@ class LevelEditor:
             self.zoom_by(action[1])
         elif name == "cycle_gate":
             self.cycle_active_gate(action[1])
+        elif name == "set_line_colour":
+            self.current_line_colour = tuple(action[1])
+            self.status = f"Line colour selected"
         elif name == "adjust_property":
             self.adjust_selected_property(action[1], action[2])
         elif name == "set_switch_gate" and self.selected and self.selected[0] == "switch":
@@ -796,10 +878,11 @@ class LevelEditor:
         if kind == "reactor" and self.level["reactor"] is not None:
             return [self.level["reactor"]["x"], self.level["reactor"]["y"]]
         if kind == "line_point":
-            return self.level["cave_lines"][self.selected[1]][self.selected[2]]
+            return line_points(self.level["cave_lines"][self.selected[1]])[self.selected[2]]
         if kind == "line":
             line = self.level["cave_lines"][self.selected[1]]
-            return [(line[0][0] + line[1][0]) * 0.5, (line[0][1] + line[1][1]) * 0.5]
+            points = line_points(line)
+            return [(points[0][0] + points[1][0]) * 0.5, (points[0][1] + points[1][1]) * 0.5]
         if kind not in ("line", "line_point"):
             item = self.level[self.collection_key(kind)][self.selected[1]]
             return [item["x"], item["y"]]
@@ -825,6 +908,10 @@ class LevelEditor:
                 FUEL_POD_SPRITE_WIDTH,
                 FUEL_POD_SPRITE_HEIGHT,
             )
+            item["x"], item["y"] = round(snapped[0], 1), round(snapped[1], 1)
+        elif kind == "tank":
+            item = self.level["tanks"][self.selected[1]]
+            snapped = self.drop_object_to_surface((item["x"], item["y"]), 56, 32)
             item["x"], item["y"] = round(snapped[0], 1), round(snapped[1], 1)
         elif kind == "orb" and self.level["orb"] is not None:
             snapped = self.drop_orb_with_plinth_to_surface((self.level["orb"]["x"], self.level["orb"]["y"]))
@@ -854,16 +941,17 @@ class LevelEditor:
             key = "x" if axis == 0 else "y"
             self.level["reactor"][key] = value
         elif kind == "line_point":
-            point = self.level["cave_lines"][self.selected[1]][self.selected[2]]
+            point = line_points(self.level["cave_lines"][self.selected[1]])[self.selected[2]]
             candidate = [point[0], point[1]]
             candidate[axis] = value
             snapped = self.snap_line_endpoint(candidate, exclude=(self.selected[1], self.selected[2]))
-            self.level["cave_lines"][self.selected[1]][self.selected[2]] = snapped
+            line_points(self.level["cave_lines"][self.selected[1]])[self.selected[2]] = snapped
         elif kind == "line":
             line = self.level["cave_lines"][self.selected[1]]
-            center = [(line[0][0] + line[1][0]) * 0.5, (line[0][1] + line[1][1]) * 0.5]
+            points = line_points(line)
+            center = [(points[0][0] + points[1][0]) * 0.5, (points[0][1] + points[1][1]) * 0.5]
             delta = value - center[axis]
-            for point in line:
+            for point in points:
                 point[axis] = round(point[axis] + delta, 1)
         else:
             item = self.level[self.collection_key(kind)][self.selected[1]]
@@ -905,27 +993,23 @@ class LevelEditor:
             self.status = f"Invalid value for {field}"
         self.active_text_field = None
 
-    def edit_text_field(self, key):
+    def edit_text_field(self, event):
         if self.active_text_field is None:
             return False
         field = self.active_text_field
         value = self.current_text_value()
-        if key == pygame.K_RETURN:
+        if event.key == pygame.K_RETURN:
             self.apply_text_field()
             return True
-        if key == pygame.K_ESCAPE:
+        if event.key == pygame.K_ESCAPE:
             self.active_text_field = None
             self.status = "Edit cancelled"
             return True
-        if key == pygame.K_BACKSPACE:
+        if event.key == pygame.K_BACKSPACE:
             new_value = value[:-1]
         else:
-            char = None
-            if key == pygame.K_SPACE and field in ("level_name", "save_as_name"):
-                char = " "
-            elif 32 <= key <= 126:
-                char = chr(key)
-            if char is None:
+            char = event.unicode
+            if not char:
                 return False
             if field not in ("level_name", "save_as_name") and char not in "0123456789.-":
                 return False
@@ -979,6 +1063,10 @@ class LevelEditor:
         elif self.tool == "rock":
             self.level["rocks"].append({"x": x, "y": y, "diameter": 20})
             self.selected = ("rock", len(self.level["rocks"]) - 1)
+        elif self.tool == "tank":
+            snapped = self.drop_object_to_surface((x, y), 56, 32)
+            self.level["tanks"].append({"x": round(snapped[0], 1), "y": round(snapped[1], 1)})
+            self.selected = ("tank", len(self.level["tanks"]) - 1)
         elif self.tool == "gate":
             gate = {
                 "id": self.next_gate_id(),
@@ -1037,15 +1125,16 @@ class LevelEditor:
             self.level["reactor"]["y"] = y
         elif kind == "line_point":
             snapped = self.snap_line_endpoint((x, y), exclude=(self.selected[1], self.selected[2]))
-            self.level["cave_lines"][self.selected[1]][self.selected[2]] = snapped
+            line_points(self.level["cave_lines"][self.selected[1]])[self.selected[2]] = snapped
         elif kind == "line":
             line = self.level["cave_lines"][self.selected[1]]
-            center = ((line[0][0] + line[1][0]) * 0.5, (line[0][1] + line[1][1]) * 0.5)
+            points = line_points(line)
+            center = ((points[0][0] + points[1][0]) * 0.5, (points[0][1] + points[1][1]) * 0.5)
             delta_x = x - center[0]
             delta_y = y - center[1]
-            self.level["cave_lines"][self.selected[1]] = [
-                [round(line[0][0] + delta_x, 1), round(line[0][1] + delta_y, 1)],
-                [round(line[1][0] + delta_x, 1), round(line[1][1] + delta_y, 1)],
+            line["points"] = [
+                [round(points[0][0] + delta_x, 1), round(points[0][1] + delta_y, 1)],
+                [round(points[1][0] + delta_x, 1), round(points[1][1] + delta_y, 1)],
             ]
         else:
             item = self.level[self.collection_key(kind)][self.selected[1]]
@@ -1065,13 +1154,13 @@ class LevelEditor:
                 item["x"] += dx
                 item["y"] += dy
         elif kind == "line_point":
-            point = self.level["cave_lines"][self.selected[1]][self.selected[2]]
+            point = line_points(self.level["cave_lines"][self.selected[1]])[self.selected[2]]
             point[0] += dx
             point[1] += dy
             snapped = self.snap_line_endpoint(point, exclude=(self.selected[1], self.selected[2]))
             point[0], point[1] = snapped
         elif kind == "line":
-            for point in self.level["cave_lines"][self.selected[1]]:
+            for point in line_points(self.level["cave_lines"][self.selected[1]]):
                 point[0] += dx
                 point[1] += dy
         else:
@@ -1093,6 +1182,8 @@ class LevelEditor:
             rock = self.level["rocks"][self.selected[1]]
             if key == "diameter":
                 rock["diameter"] = max(8, min(80, rock.get("diameter", 20) + step * 2))
+        elif kind == "tank":
+            pass
         elif kind == "gate":
             gate = self.level["gates"][self.selected[1]]
             if key == "length":
@@ -1153,7 +1244,15 @@ class LevelEditor:
         if event.button == 2:
             self.pan_drag = True
             return
-        if event.button == 1 and event.pos[0] >= CANVAS_WIDTH:
+        if event.button == 1 and self.show_level_list:
+            for rect, action, enabled in reversed(self.ui_buttons):
+                if enabled and rect.collidepoint(event.pos):
+                    self.perform_ui_action(action)
+                    return
+            self.show_level_list = False
+            self.status = "Load cancelled"
+            return
+        if event.button == 1:
             if self.minimap_rect is not None and self.minimap_rect.collidepoint(event.pos):
                 min_x, max_x, min_y, max_y = self.level["world_bounds"]
                 rx = (event.pos[0] - self.minimap_rect.x) / max(1, self.minimap_rect.width)
@@ -1170,7 +1269,8 @@ class LevelEditor:
                 if enabled and rect.collidepoint(event.pos):
                     self.perform_ui_action(action)
                     return
-            return
+            if not self.canvas_contains(event.pos):
+                return
         if not self.canvas_contains(event.pos):
             return
         world_pos = self.screen_to_world(event.pos)
@@ -1194,11 +1294,12 @@ class LevelEditor:
                     elif kind == "reactor":
                         anchor = (self.level["reactor"]["x"], self.level["reactor"]["y"])
                     elif kind == "line_point":
-                        point = self.level["cave_lines"][self.selected[1]][self.selected[2]]
+                        point = line_points(self.level["cave_lines"][self.selected[1]])[self.selected[2]]
                         anchor = (point[0], point[1])
                     elif kind == "line":
                         line = self.level["cave_lines"][self.selected[1]]
-                        anchor = ((line[0][0] + line[1][0]) * 0.5, (line[0][1] + line[1][1]) * 0.5)
+                        points = line_points(line)
+                        anchor = ((points[0][0] + points[1][0]) * 0.5, (points[0][1] + points[1][1]) * 0.5)
                     else:
                         item = self.level[self.collection_key(kind)][self.selected[1]]
                         anchor = (item["x"], item["y"])
@@ -1209,12 +1310,18 @@ class LevelEditor:
                     self.drag_offset = (world_pos[0] - anchor[0], world_pos[1] - anchor[1])
                     self.status = self.get_selection_summary()
             elif self.tool == "line":
+                hit_line = self.line_hit_test(world_pos)
                 if self.line_start is None:
-                    self.line_start = self.snap_line_endpoint(world_pos)
-                    self.status = "Line start set"
+                    if hit_line is not None and line_colour(self.level["cave_lines"][hit_line]) != tuple(self.current_line_colour):
+                        self.set_line_colour(hit_line, self.current_line_colour)
+                        self.selected = ("line", hit_line)
+                        self.mark_dirty("Painted line")
+                    else:
+                        self.line_start = self.snap_line_endpoint(world_pos)
+                        self.status = "Line start set"
                 else:
                     end_point = self.snap_line_endpoint(world_pos)
-                    self.level["cave_lines"].append([self.line_start, end_point])
+                    self.level["cave_lines"].append({"points": [self.line_start, end_point], "colour": list(self.current_line_colour)})
                     self.selected = ("line", len(self.level["cave_lines"]) - 1)
                     self.line_start = None
                     self.mark_dirty("Added cave line")
@@ -1246,7 +1353,7 @@ class LevelEditor:
 
     def handle_mouse_wheel(self, event):
         mouse_x, mouse_y = pygame.mouse.get_pos()
-        if mouse_x >= CANVAS_WIDTH:
+        if not self.canvas_contains((mouse_x, mouse_y)):
             return
         before = self.screen_to_world((mouse_x, mouse_y))
         zoom_factor = 1.1 if event.y > 0 else 1.0 / 1.1
@@ -1258,7 +1365,7 @@ class LevelEditor:
     def handle_keydown(self, event):
         mods = pygame.key.get_mods()
         if self.active_text_field is not None:
-            if self.edit_text_field(event.key):
+            if self.edit_text_field(event):
                 return
         if event.key in TOOL_KEYS:
             self.tool = TOOL_KEYS[event.key]
@@ -1286,6 +1393,10 @@ class LevelEditor:
             self.delete_selected()
             return
         if event.key == pygame.K_ESCAPE:
+            if self.show_level_list:
+                self.show_level_list = False
+                self.status = "Load cancelled"
+                return
             self.line_start = None
             self.dragging = False
             self.selected = None
@@ -1359,14 +1470,14 @@ class LevelEditor:
         x = first_x
         while x <= end_x:
             sx, _ = self.world_to_screen((x, 0))
-            pygame.draw.line(grid_surface, GRID_COLOUR, (sx, 0), (sx, SCREEN_HEIGHT))
+            pygame.draw.line(grid_surface, GRID_COLOUR, (sx - LEFT_PANEL_WIDTH, 0), (sx - LEFT_PANEL_WIDTH, SCREEN_HEIGHT))
             x += step
         y = first_y
         while y <= end_y:
             _, sy = self.world_to_screen((0, y))
             pygame.draw.line(grid_surface, GRID_COLOUR, (0, sy), (CANVAS_WIDTH, sy))
             y += step
-        self.screen.blit(grid_surface, (0, 0))
+        self.screen.blit(grid_surface, (LEFT_PANEL_WIDTH, 0))
 
     def draw_world_bounds(self):
         min_x, max_x, min_y, max_y = self.level["world_bounds"]
@@ -1377,20 +1488,21 @@ class LevelEditor:
 
     def draw_cave_lines(self):
         for index, line in enumerate(self.level["cave_lines"]):
-            start = self.world_to_screen(line[0])
-            end = self.world_to_screen(line[1])
+            points = line_points(line)
+            start = self.world_to_screen(points[0])
+            end = self.world_to_screen(points[1])
             selected = self.selected is not None and self.selected[:2] == ("line", index)
-            colour = HIGHLIGHT if selected else (110, 214, 255)
+            colour = HIGHLIGHT if selected else line_colour(line)
             pygame.draw.line(self.screen, colour, start, end, 3)
-            for point_index, point in enumerate(line):
+            for point_index, point in enumerate(points):
                 point_selected = self.selected == ("line_point", index, point_index)
-                point_colour = (255, 255, 255) if point_selected else (120, 180, 210)
+                point_colour = (255, 255, 255) if point_selected else colour
                 pygame.draw.circle(self.screen, point_colour, (int(self.world_to_screen(point)[0]), int(self.world_to_screen(point)[1])), 5)
         if self.line_start is not None:
             start = self.world_to_screen(self.line_start)
             mouse_pos = pygame.mouse.get_pos()
             if self.canvas_contains(mouse_pos):
-                pygame.draw.line(self.screen, (255, 180, 120), start, mouse_pos, 2)
+                pygame.draw.line(self.screen, self.current_line_colour, start, mouse_pos, 2)
 
     def draw_marker(self, pos, colour, radius=10, outline=(255, 255, 255)):
         sx, sy = self.world_to_screen(pos)
@@ -1500,6 +1612,24 @@ class LevelEditor:
         pygame.draw.circle(self.screen, outline, (int(sx), int(sy)), radius, 2)
         pygame.draw.circle(self.screen, (88, 92, 100), (int(sx + radius * 0.35), int(sy - radius * 0.2)), max(1, int(radius * 0.25)))
 
+    def draw_tank_icon(self, tank, selected=False):
+        sx, sy = self.world_to_screen((tank["x"], tank["y"]))
+        scale = max(0.35, self.zoom)
+        outline = HIGHLIGHT if selected else (210, 182, 120)
+        body_rect = pygame.Rect(0, 0, max(12, int(44 * scale)), max(7, int(18 * scale)))
+        body_rect.center = (sx, sy)
+        turret_rect = pygame.Rect(0, 0, max(8, int(20 * scale)), max(5, int(12 * scale)))
+        turret_rect.center = (sx, sy - 3 * scale)
+        track_rect = pygame.Rect(0, 0, max(14, int(52 * scale)), max(4, int(8 * scale)))
+        track_rect.center = (sx, sy + 10 * scale)
+        pygame.draw.rect(self.screen, (86, 104, 72), track_rect, border_radius=max(2, int(3 * scale)))
+        pygame.draw.rect(self.screen, (112, 132, 96), body_rect, border_radius=max(2, int(4 * scale)))
+        pygame.draw.rect(self.screen, outline, body_rect, max(1, int(2 * scale)), border_radius=max(2, int(4 * scale)))
+        pygame.draw.rect(self.screen, (132, 150, 112), turret_rect, border_radius=max(2, int(3 * scale)))
+        pygame.draw.rect(self.screen, outline, turret_rect, max(1, int(2 * scale)), border_radius=max(2, int(3 * scale)))
+        gun_end = (sx + 20 * scale, sy - 4 * scale)
+        pygame.draw.line(self.screen, (178, 188, 160), (sx + 4 * scale, sy - 4 * scale), gun_end, max(1, int(4 * scale)))
+
     def draw_switch_icon(self, switch, selected=False, gate_match=False):
         sx, sy = self.world_to_screen((switch["x"], switch["y"]))
         scale = max(0.35, self.zoom)
@@ -1524,6 +1654,8 @@ class LevelEditor:
             self.draw_fuel_pod_icon(pod, selected=self.selected == ("fuel_pod", index))
         for index, rock in enumerate(self.level["rocks"]):
             self.draw_rock_icon(rock, selected=self.selected == ("rock", index))
+        for index, tank in enumerate(self.level["tanks"]):
+            self.draw_tank_icon(tank, selected=self.selected == ("tank", index))
         for index, gate in enumerate(self.level["gates"]):
             sx, sy = self.world_to_screen((gate["x"], gate["y"]))
             rect = pygame.Rect(0, 0, gate["width"] * self.zoom, gate["height"] * self.zoom)
@@ -1564,88 +1696,129 @@ class LevelEditor:
             self.draw_reactor_icon((self.level["reactor"]["x"], self.level["reactor"]["y"]), selected=self.selected == ("reactor",))
         self.draw_ship_icon(tuple(self.level["ship_start"]), selected=self.selected == ("ship_start",))
 
+    def draw_load_dialog(self):
+        if not self.show_level_list:
+            return
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((6, 8, 14, 188))
+        self.screen.blit(overlay, (0, 0))
+
+        dialog_w = min(560, SCREEN_WIDTH - 160)
+        dialog_h = min(520, SCREEN_HEIGHT - 120)
+        dialog = pygame.Rect(0, 0, dialog_w, dialog_h)
+        dialog.center = (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+        pygame.draw.rect(self.screen, PANEL_BG, dialog, border_radius=10)
+        pygame.draw.rect(self.screen, PANEL_BORDER, dialog, 2, border_radius=10)
+
+        title = self.font.render("Load Level", True, HIGHLIGHT)
+        self.screen.blit(title, (dialog.x + 16, dialog.y + 14))
+        hint = self.small_font.render("Choose a JSON level file from the levels folder", True, MUTED_TEXT)
+        self.screen.blit(hint, (dialog.x + 16, dialog.y + 42))
+
+        list_top = dialog.y + 78
+        list_h = dialog.height - 132
+        list_rect = pygame.Rect(dialog.x + 14, list_top, dialog.width - 28, list_h)
+        pygame.draw.rect(self.screen, (18, 22, 30), list_rect, border_radius=8)
+        pygame.draw.rect(self.screen, PANEL_BORDER, list_rect, 1, border_radius=8)
+
+        row_y = list_rect.y + 10
+        visible_paths = self.level_paths[:12]
+        for level_path in visible_paths:
+            label = os.path.basename(level_path)
+            self.draw_button(
+                pygame.Rect(list_rect.x + 10, row_y, list_rect.width - 20, 28),
+                label,
+                ("load_level", level_path),
+                enabled=not self.unsaved,
+                active=level_path == self.path,
+            )
+            row_y += 32
+
+        if not visible_paths:
+            empty = self.small_font.render("No level files found in levels/", True, MUTED_TEXT)
+            self.screen.blit(empty, (list_rect.x + 12, list_rect.y + 12))
+
+        self.draw_button(
+            pygame.Rect(dialog.right - 98, dialog.bottom - 42, 82, 28),
+            "Cancel",
+            ("close_load_dialog",),
+        )
+
     def draw_sidebar(self):
         self.ui_buttons = []
         self.text_fields = []
         self.minimap_rect = None
-        sidebar_rect = pygame.Rect(CANVAS_WIDTH, 0, SIDEBAR_WIDTH, SCREEN_HEIGHT)
+        left_sidebar_rect = pygame.Rect(0, 0, LEFT_PANEL_WIDTH, SCREEN_HEIGHT)
+        pygame.draw.rect(self.screen, (18, 22, 32), left_sidebar_rect)
+        right_sidebar_x = LEFT_PANEL_WIDTH + CANVAS_WIDTH
+        sidebar_rect = pygame.Rect(right_sidebar_x, 0, SIDEBAR_WIDTH, SCREEN_HEIGHT)
         pygame.draw.rect(self.screen, (18, 22, 32), sidebar_rect)
-        title = self.font.render("Level Editor", True, TEXT_COLOUR)
-        self.screen.blit(title, (CANVAS_WIDTH + 16, 16))
+
+        left_panel_x = 12
+        left_panel_width = LEFT_PANEL_WIDTH - 24
         file_label = os.path.basename(self.path) if self.path else "(new unsaved level)"
+
+        self.draw_panel(left_panel_x, 16, left_panel_width, 214, "File")
+        title = self.font.render("Level Editor", True, TEXT_COLOUR)
+        self.screen.blit(title, (left_panel_x + 12, 26))
         file_text = self.small_font.render(file_label, True, MUTED_TEXT)
-        self.screen.blit(file_text, (CANVAS_WIDTH + 16, 42))
-
-        panel_x = CANVAS_WIDTH + 12
-        panel_width = SIDEBAR_WIDTH - 24
-
-        self.draw_panel(panel_x, 72, panel_width, 128, "Tools")
-        button_w = (panel_width - 30) // 2
-        tool_y = 104
-        for index, (tool, label) in enumerate(TOOLS):
-            col = index % 2
-            row = index // 2
-            rect = pygame.Rect(panel_x + 12 + col * (button_w + 6), tool_y + row * 30, button_w, 24)
-            self.draw_button(rect, label, ("set_tool", tool), active=self.tool == tool)
-
-        self.draw_panel(panel_x, 208, panel_width, 154, "File")
+        self.screen.blit(file_text, (left_panel_x + 12, 54))
         self.draw_button(
-            pygame.Rect(panel_x + 12, 242, 66, 28),
+            pygame.Rect(left_panel_x + 12, 84, 106, 28),
             "New",
             ("new_level",),
             enabled=not self.unsaved,
         )
-        self.draw_button(pygame.Rect(panel_x + 84, 242, 66, 28), "Save", ("save",), enabled=self.path is not None)
-        self.draw_button(pygame.Rect(panel_x + 156, 242, 66, 28), "Save As", ("save_as",))
+        self.draw_button(pygame.Rect(left_panel_x + 130, 84, 106, 28), "Save", ("save",), enabled=self.path is not None)
+        self.draw_button(pygame.Rect(left_panel_x + 12, 118, 106, 28), "Save As", ("save_as",))
         self.draw_button(
-            pygame.Rect(panel_x + 228, 242, 66, 28),
+            pygame.Rect(left_panel_x + 130, 118, 106, 28),
             "Load",
-            ("toggle_level_list",),
+            ("load_dialog",),
             enabled=not self.unsaved,
-            active=self.show_level_list,
         )
         self.draw_button(
-            pygame.Rect(panel_x + 12, 274, 66, 28),
+            pygame.Rect(left_panel_x + 12, 152, 106, 28),
             "Reload",
             ("reload",),
             enabled=self.path is not None,
         )
         self.draw_button(
-            pygame.Rect(panel_x + 84, 274, 66, 28),
+            pygame.Rect(left_panel_x + 130, 152, 106, 28),
             "Play",
             ("play_level",),
             enabled=not self.unsaved and self.path is not None,
         )
-        save_state = "Unsaved changes" if self.unsaved else "All changes saved"
-        save_colour = HIGHLIGHT if self.unsaved else (150, 232, 178)
-        save_text = self.small_font.render(save_state, True, save_colour)
-        self.screen.blit(save_text, (panel_x + 12, 312))
-        saved_at = self.last_saved_at or "Not saved yet"
-        saved_text = self.small_font.render(f"Last save: {saved_at}", True, MUTED_TEXT)
-        self.screen.blit(saved_text, (panel_x + 12, 330))
+        self.draw_button(
+            pygame.Rect(left_panel_x + 12, 186, 224, 28),
+            "Center View",
+            ("center_camera",),
+        )
 
-        level_panel_height = 34 + min(6, max(1, len(self.level_paths))) * 28 if self.show_level_list else 58
-        level_panel = self.draw_panel(panel_x, 370, panel_width, level_panel_height, "Levels")
-        current_label = os.path.basename(self.path) if self.path else "(new unsaved level)"
-        current_name = self.small_font.render(current_label, True, TEXT_COLOUR)
-        self.screen.blit(current_name, (panel_x + 12, 332))
-        self.draw_button(pygame.Rect(panel_x + panel_width - 108, 326, 96, 24), "Center View", ("center_camera",))
-        if self.show_level_list:
-            row_y = 356
-            for level_path in self.level_paths[:6]:
-                label = os.path.basename(level_path)
-                self.draw_button(
-                    pygame.Rect(panel_x + 12, row_y, panel_width - 24, 24),
-                    label,
-                    ("load_level", level_path),
-                    enabled=not self.unsaved,
-                    active=level_path == self.path,
-                )
-                row_y += 28
+        self.draw_panel(left_panel_x, 242, left_panel_width, 238, "Objects")
+        button_w = (left_panel_width - 30) // 2
+        tool_y = 284
+        for index, (tool, label) in enumerate(TOOLS):
+            col = index % 2
+            row = index // 2
+            rect = pygame.Rect(left_panel_x + 12 + col * (button_w + 6), tool_y + row * 34, button_w, 30)
+            self.draw_button(rect, label, ("set_tool", tool), active=self.tool == tool)
 
-        self.draw_panel(panel_x, 370 + level_panel_height + 8, panel_width, 152, "Level")
+        palette_y = 496
+        self.draw_panel(left_panel_x, palette_y, left_panel_width, 94, "Line Colour")
+        swatch_y = palette_y + 36
+        for index, colour in enumerate(CAVE_LINE_PALETTE):
+            swatch = pygame.Rect(left_panel_x + 12 + index * 38, swatch_y, 28, 28)
+            pygame.draw.rect(self.screen, colour, swatch, border_radius=6)
+            border = HIGHLIGHT if tuple(colour) == tuple(self.current_line_colour) else PANEL_BORDER
+            pygame.draw.rect(self.screen, border, swatch, 2, border_radius=6)
+            self.register_button(swatch, ("set_line_colour", colour), True)
+
+        panel_x = right_sidebar_x + 12
+        panel_width = SIDEBAR_WIDTH - 24
+        self.draw_panel(panel_x, 16, panel_width, 152, "Level")
         name_label = self.small_font.render("Name", True, MUTED_TEXT)
-        level_y = 370 + level_panel_height + 8
+        level_y = 16
         self.screen.blit(name_label, (panel_x + 12, level_y + 34))
         self.register_text_field(pygame.Rect(panel_x + 72, level_y + 28, panel_width - 84, 28), "level_name", self.level["name"])
         self.draw_property_row(panel_x + 12, level_y + 64, panel_width - 24, "Gravity", self.level["gravity"], ("adjust_gravity", -2.0), ("adjust_gravity", 2.0))
@@ -1696,6 +1869,13 @@ class LevelEditor:
                 self.register_text_field(pygame.Rect(panel_x + 132, detail_y, 78, 28), "pos_y", int(rock["y"]))
                 detail_y += 34
                 self.draw_property_row(panel_x + 12, detail_y, panel_width - 24, "Diameter", rock.get("diameter", 20), ("adjust_property", "diameter", -1), ("adjust_property", "diameter", 1))
+            elif kind == "tank":
+                tank = self.level["tanks"][self.selected[1]]
+                self.draw_property_row(panel_x + 12, detail_y, panel_width - 24, "X", int(tank["x"]))
+                self.register_text_field(pygame.Rect(panel_x + 132, detail_y, 78, 28), "pos_x", int(tank["x"]))
+                detail_y += 34
+                self.draw_property_row(panel_x + 12, detail_y, panel_width - 24, "Y", int(tank["y"]))
+                self.register_text_field(pygame.Rect(panel_x + 132, detail_y, 78, 28), "pos_y", int(tank["y"]))
             elif kind == "gate":
                 gate = self.level["gates"][self.selected[1]]
                 self.draw_property_row(panel_x + 12, detail_y, panel_width - 24, "Gate ID", gate["id"])
@@ -1792,11 +1972,12 @@ class LevelEditor:
         world_w = max(1.0, max_x - min_x)
         world_h = max(1.0, max_y - min_y)
         for line in self.level["cave_lines"]:
-            ax = map_rect.x + (line[0][0] - min_x) / world_w * map_rect.width
-            ay = map_rect.y + (line[0][1] - min_y) / world_h * map_rect.height
-            bx = map_rect.x + (line[1][0] - min_x) / world_w * map_rect.width
-            by = map_rect.y + (line[1][1] - min_y) / world_h * map_rect.height
-            pygame.draw.line(self.screen, (90, 190, 230), (ax, ay), (bx, by), 1)
+            points = line_points(line)
+            ax = map_rect.x + (points[0][0] - min_x) / world_w * map_rect.width
+            ay = map_rect.y + (points[0][1] - min_y) / world_h * map_rect.height
+            bx = map_rect.x + (points[1][0] - min_x) / world_w * map_rect.width
+            by = map_rect.y + (points[1][1] - min_y) / world_h * map_rect.height
+            pygame.draw.line(self.screen, line_colour(line), (ax, ay), (bx, by), 1)
         cam_world_w = CANVAS_WIDTH / self.zoom
         cam_world_h = SCREEN_HEIGHT / self.zoom
         view_rect = pygame.Rect(
@@ -1828,22 +2009,25 @@ class LevelEditor:
             )
             row_y += 26
 
-        status_bg = pygame.Rect(CANVAS_WIDTH, SCREEN_HEIGHT - 40, SIDEBAR_WIDTH, 40)
+        right_sidebar_x = LEFT_PANEL_WIDTH + CANVAS_WIDTH
+        status_bg = pygame.Rect(right_sidebar_x, SCREEN_HEIGHT - 40, SIDEBAR_WIDTH, 40)
         pygame.draw.rect(self.screen, (28, 34, 44), status_bg)
         status = self.small_font.render(self.status[:36], True, HIGHLIGHT if self.unsaved else TEXT_COLOUR)
-        self.screen.blit(status, (CANVAS_WIDTH + 12, SCREEN_HEIGHT - 28))
+        self.screen.blit(status, (right_sidebar_x + 12, SCREEN_HEIGHT - 28))
         disk_state = "DIRTY" if self.unsaved else "SAVED"
         disk_colour = HIGHLIGHT if self.unsaved else (150, 232, 178)
         disk_text = self.small_font.render(disk_state, True, disk_colour)
-        self.screen.blit(disk_text, (CANVAS_WIDTH + SIDEBAR_WIDTH - 70, SCREEN_HEIGHT - 28))
+        self.screen.blit(disk_text, (right_sidebar_x + SIDEBAR_WIDTH - 70, SCREEN_HEIGHT - 28))
 
     def draw(self):
         self.draw_grid()
         self.draw_world_bounds()
         self.draw_cave_lines()
         self.draw_objects()
-        pygame.draw.line(self.screen, (40, 50, 68), (CANVAS_WIDTH, 0), (CANVAS_WIDTH, SCREEN_HEIGHT), 2)
+        pygame.draw.line(self.screen, (40, 50, 68), (LEFT_PANEL_WIDTH, 0), (LEFT_PANEL_WIDTH, SCREEN_HEIGHT), 2)
+        pygame.draw.line(self.screen, (40, 50, 68), (LEFT_PANEL_WIDTH + CANVAS_WIDTH, 0), (LEFT_PANEL_WIDTH + CANVAS_WIDTH, SCREEN_HEIGHT), 2)
         self.draw_sidebar()
+        self.draw_load_dialog()
         pygame.display.flip()
 
     def run(self):
