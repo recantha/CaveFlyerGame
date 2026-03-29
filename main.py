@@ -1714,15 +1714,32 @@ class FuelPod:
         self.sprite = sprite
         # Match the pod's tall drawn silhouette more closely so shield contact reads correctly.
         self.radius = max(18, int(max(sprite.get_width(), sprite.get_height()) * 0.46))
+        self.hit_points = 2
+        self.destroyed = False
         self.fuel_remaining = FUEL_POD_AMOUNT
         self.spawn_cooldown = 0.0
         self.depleted_effect_played = False
+        self.flash_time = 0.0
 
     def contains_point(self, x, y, radius=0.0, level=None):
+        if self.destroyed:
+            return False
         dx = self.x - x
         if level is not None:
             dx = level.wrapped_dx(x, self.x)
         return math.hypot(dx, self.y - y) <= self.radius + radius
+
+    def apply_hit(self):
+        if self.destroyed:
+            return False
+        self.flash_time = 0.20
+        self.hit_points -= 1
+        if self.hit_points <= 0:
+            self.destroyed = True
+            self.fuel_remaining = 0.0
+            self.depleted_effect_played = True
+            return True
+        return False
 
     def tractor_beam_overlap(self, ship, level):
         angle_rad = math.radians(ship.angle)
@@ -1749,7 +1766,8 @@ class FuelPod:
         )
 
     def update(self, ship, level, tractor_active, dt, fuel_particles):
-        if self.fuel_remaining <= 0.0:
+        self.flash_time = max(0.0, self.flash_time - dt)
+        if self.destroyed or self.fuel_remaining <= 0.0:
             return False
         self.spawn_cooldown = max(0.0, self.spawn_cooldown - dt)
         if not tractor_active or not self.tractor_beam_overlap(ship, level):
@@ -1767,7 +1785,7 @@ class FuelPod:
         return False
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
-        if self.fuel_remaining <= 0.0:
+        if self.destroyed or self.fuel_remaining <= 0.0:
             return
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
         center_x = int(self.x + offset_x - camera_x)
@@ -1778,9 +1796,22 @@ class FuelPod:
         if fill_height > 0:
             fill_surface = pygame.Surface(self.sprite.get_size(), pygame.SRCALPHA)
             fill_rect = pygame.Rect(8, self.sprite.get_height() - 10 - fill_height, self.sprite.get_width() - 16, fill_height)
-            pygame.draw.rect(fill_surface, (90, 255, 180, 110), fill_rect, border_radius=5)
+            fill_colour = (90, 255, 180, 110) if self.hit_points > 1 else (70, 170, 130, 88)
+            pygame.draw.rect(fill_surface, fill_colour, fill_rect, border_radius=5)
             screen.blit(fill_surface, rect)
         screen.blit(self.sprite, rect)
+        if self.hit_points == 1:
+            damage_surface = pygame.Surface(self.sprite.get_size(), pygame.SRCALPHA)
+            pygame.draw.rect(damage_surface, (28, 34, 32, 96), damage_surface.get_rect(), border_radius=7)
+            pygame.draw.line(damage_surface, (255, 232, 210, 190), (12, 14), (24, 28), 2)
+            pygame.draw.line(damage_surface, (255, 232, 210, 170), (24, 28), (18, 42), 2)
+            pygame.draw.line(damage_surface, (255, 232, 210, 150), (22, 20), (30, 34), 1)
+            screen.blit(damage_surface, rect, special_flags=pygame.BLEND_ALPHA_SDL2)
+        if self.flash_time > 0.0:
+            flash_alpha = int(220 * (self.flash_time / 0.20))
+            flash_surface = pygame.Surface(self.sprite.get_size(), pygame.SRCALPHA)
+            pygame.draw.rect(flash_surface, (255, 252, 210, flash_alpha), flash_surface.get_rect(), border_radius=7)
+            screen.blit(flash_surface, rect, special_flags=pygame.BLEND_ALPHA_SDL2)
 
 
 class FuelTransferParticle:
@@ -2430,7 +2461,7 @@ class Level:
             self._register_solid("switch", switch, switch.x, switch.y, switch.radius)
 
         for fuel_pod in self.fuel_pods:
-            if fuel_pod.fuel_remaining > 0.0:
+            if not fuel_pod.destroyed and fuel_pod.fuel_remaining > 0.0:
                 self._register_solid("fuel_pod", fuel_pod, fuel_pod.x, fuel_pod.y, fuel_pod.radius)
 
         if self.reactor and self.reactor.alive:
@@ -3992,6 +4023,21 @@ class Game:
                         continue
 
                 if self.handle_bullet_solid_collision(bullet):
+                    continue
+
+                for fuel_pod in self.level.nearby_solids(bullet.x, bullet.y, bullet.radius, kinds=("fuel_pod",)).get("fuel_pod", ()):
+                    if fuel_pod.destroyed or fuel_pod.fuel_remaining <= 0.0:
+                        continue
+                    if not fuel_pod.contains_point(bullet.x, bullet.y, bullet.radius, self.level):
+                        continue
+                    bullet.alive = False
+                    self.spawn_bullet_impact(bullet.x, bullet.y, from_player=True)
+                    destroyed = fuel_pod.apply_hit()
+                    if destroyed:
+                        self.spawn_fuel_pod_plop(fuel_pod.x, fuel_pod.y)
+                    break
+
+                if not bullet.alive:
                     continue
 
                 if self.level.orb and bullet.from_player and self.level.orb.plinth_contains_point(bullet.x, bullet.y, bullet.radius, self.level):
