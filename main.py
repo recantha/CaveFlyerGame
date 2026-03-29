@@ -126,6 +126,11 @@ def load_json(path):
         return json.load(f)
 
 
+def is_playable_level_data(level_data):
+    cave_lines = level_data.get("cave_lines")
+    return isinstance(cave_lines, list) and len(cave_lines) > 0
+
+
 def point_to_segment_distance(px, py, ax, ay, bx, by):
     """Return the shortest distance from point P to line segment AB."""
     abx = bx - ax
@@ -1046,19 +1051,76 @@ class Ship:
         self.y += ny * separation
         self.trigger_bounce_flash()
 
-    def bounce_off_line(self, line, level):
-        (ax, ay), (bx, by) = line
-        cx, cy = closest_point_on_segment(self.x, self.y, ax, ay, bx, by)
-        nx = self.x - cx
-        ny = self.y - cy
-        if nx == 0.0 and ny == 0.0:
-            seg_dx = bx - ax
-            seg_dy = by - ay
-            seg_len = math.hypot(seg_dx, seg_dy)
-            if seg_len > 0.0:
+    def terrain_collision_contacts(self, level, collision_radius, x=None, y=None):
+        px = self.x if x is None else x
+        py = self.y if y is None else y
+        contacts = []
+        for line in level.collision_lines():
+            if not line_circle_collision(line, px, py, collision_radius):
+                continue
+            (ax, ay), (bx, by) = line
+            cx, cy = closest_point_on_segment(px, py, ax, ay, bx, by)
+            nx = px - cx
+            ny = py - cy
+            dist = math.hypot(nx, ny)
+            penetration = collision_radius - dist
+            if dist > 1e-6:
+                nx /= dist
+                ny /= dist
+            else:
+                seg_dx = bx - ax
+                seg_dy = by - ay
+                seg_len = math.hypot(seg_dx, seg_dy)
+                if seg_len <= 1e-6:
+                    continue
                 nx = -seg_dy / seg_len
                 ny = seg_dx / seg_len
-        self.bounce_off_normal(nx, ny)
+                penetration = max(penetration, collision_radius * 0.35)
+            contacts.append((nx, ny, max(0.0, penetration)))
+        return contacts
+
+    def bounce_off_line(self, line, level):
+        contacts = self.terrain_collision_contacts(level, self.collision_radius())
+        if not contacts:
+            (ax, ay), (bx, by) = line
+            cx, cy = closest_point_on_segment(self.x, self.y, ax, ay, bx, by)
+            nx = self.x - cx
+            ny = self.y - cy
+            if nx == 0.0 and ny == 0.0:
+                seg_dx = bx - ax
+                seg_dy = by - ay
+                seg_len = math.hypot(seg_dx, seg_dy)
+                if seg_len > 0.0:
+                    nx = -seg_dy / seg_len
+                    ny = seg_dx / seg_len
+            self.bounce_off_normal(nx, ny)
+            return
+
+        total_nx = 0.0
+        total_ny = 0.0
+        max_penetration = 0.0
+        for nx, ny, penetration in contacts:
+            weight = max(1.0, penetration * 3.0)
+            total_nx += nx * weight
+            total_ny += ny * weight
+            max_penetration = max(max_penetration, penetration)
+
+        self.bounce_off_normal(total_nx, total_ny, separation=max(4.0, max_penetration + 2.5))
+
+        # Resolve any remaining seam overlap so the shield does not get nudged through tiny gaps.
+        for _ in range(3):
+            contacts = self.terrain_collision_contacts(level, self.collision_radius())
+            if not contacts:
+                break
+            resolve_nx = sum(nx * max(1.0, penetration * 3.0) for nx, _, penetration in contacts)
+            resolve_ny = sum(ny * max(1.0, penetration * 3.0) for _, ny, penetration in contacts)
+            resolve_penetration = max(penetration for _, _, penetration in contacts)
+            length = math.hypot(resolve_nx, resolve_ny)
+            if length <= 1e-6:
+                break
+            self.x += (resolve_nx / length) * (resolve_penetration + 0.8)
+            self.y += (resolve_ny / length) * (resolve_penetration + 0.8)
+        self.trigger_bounce_flash()
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
         if not self.alive:
@@ -2158,6 +2220,8 @@ class Level:
         self.ship_start = tuple(level_data["ship_start"])
         self.authored_line_records = normalize_cave_line_records(level_data["cave_lines"])
         self.authored_lines = tuple(tuple(record["points"]) for record in self.authored_line_records)
+        if not self.authored_lines:
+            raise ValueError(f"Level '{self.name}' has no cave lines")
         self.terrain_line_records = []
         world_bounds = level_data.get("world_bounds")
 
@@ -3084,9 +3148,13 @@ class Game:
         if level_file is not None:
             self.level_paths = [level_file]
         else:
-            self.level_paths = sorted(glob.glob("levels/*.json"))
+            self.level_paths = [
+                path
+                for path in sorted(glob.glob("levels/*.json"))
+                if is_playable_level_data(load_json(path))
+            ]
         if not self.level_paths:
-            raise RuntimeError("No level JSON files found in levels/")
+            raise RuntimeError("No playable level JSON files found in levels/")
 
         self.level_index = max(0, min(len(self.level_paths) - 1, start_level - 1))
         self.level = None
