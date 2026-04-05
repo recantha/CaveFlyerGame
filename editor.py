@@ -1828,7 +1828,8 @@ class LevelEditor:
         self.draw_property_row(panel_x + 12, level_y + 132, panel_width - 24, "Active Gate", active_gate_label, ("cycle_gate", -1), ("cycle_gate", 1))
 
         selection_y = level_y + 160
-        self.draw_panel(panel_x, selection_y, panel_width, 258, "Selection")
+        selection_height = 440
+        self.draw_panel(panel_x, selection_y, panel_width, selection_height, "Selection")
         selection_text = self.small_font.render(self.get_selection_summary()[:34], True, TEXT_COLOUR)
         self.screen.blit(selection_text, (panel_x + 12, selection_y + 32))
         self.draw_button(
@@ -1899,7 +1900,7 @@ class LevelEditor:
                 detail_y += 34
                 self.draw_property_row(panel_x + 12, detail_y, panel_width - 24, "Slide Time", gate.get("slide_time", 0.55), ("adjust_property", "slide_time", -1), ("adjust_property", "slide_time", 1))
                 detail_y += 38
-                self.draw_button(pygame.Rect(panel_x + 12, detail_y, 96, 28), "Flip Axis", ("adjust_property", "flip", 1))
+                self.draw_button(pygame.Rect(panel_x + 12, detail_y, 112, 28), "Rotate 90", ("adjust_property", "flip", 1))
             elif kind == "switch":
                 switch = self.level["switches"][self.selected[1]]
                 gate_ids = [gate["id"] for gate in self.level["gates"]]
@@ -1962,7 +1963,7 @@ class LevelEditor:
                     self.screen.blit(text, (panel_x + 12, detail_y))
                     detail_y += 22
 
-        minimap_y = selection_y + 266
+        minimap_y = selection_y + selection_height + 8
         help_rect = self.draw_panel(panel_x, minimap_y, panel_width, 86, "Minimap")
         map_rect = pygame.Rect(panel_x + 12, 758, panel_width - 24, 42)
         map_rect = pygame.Rect(panel_x + 12, minimap_y + 32, panel_width - 24, 42)
