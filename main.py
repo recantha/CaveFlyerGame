@@ -164,6 +164,17 @@ def closest_point_on_segment(px, py, ax, ay, bx, by):
     return ax + t * abx, ay + t * aby
 
 
+def rotate_point(px, py, cx, cy, angle_radians):
+    dx = px - cx
+    dy = py - cy
+    cos_a = math.cos(angle_radians)
+    sin_a = math.sin(angle_radians)
+    return (
+        cx + dx * cos_a - dy * sin_a,
+        cy + dx * sin_a + dy * cos_a,
+    )
+
+
 def line_circle_collision(line, cx, cy, radius):
     """True if the circle touches the line segment."""
     (ax, ay), (bx, by) = line
@@ -1342,6 +1353,7 @@ class Turret:
         self.direction = direction
         self.sprite = sprite
         self.floor_offset = 10.0
+        self.support_angle = 0.0
         self.radius = TURRET_RADIUS
         self.hit_points = TURRET_HIT_POINTS
         self.alive = True
@@ -1407,12 +1419,22 @@ class Turret:
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
         cx = self.x + offset_x - camera_x
         cy = self.y - camera_y
+        support_angle = self.support_angle
+
+        def rotate_rect(rect):
+            corners = [
+                rotate_point(rect.left, rect.top, cx, cy, support_angle),
+                rotate_point(rect.right, rect.top, cx, cy, support_angle),
+                rotate_point(rect.right, rect.bottom, cx, cy, support_angle),
+                rotate_point(rect.left, rect.bottom, cx, cy, support_angle),
+            ]
+            return corners
 
         base_rect = pygame.Rect(0, 0, 44, 18)
         base_rect.center = (cx, cy + 11)
         plinth_rect = pygame.Rect(0, 0, 32, 12)
         plinth_rect.center = (cx, cy + 1)
-        head_center = (int(cx), int(cy - 6))
+        head_center = rotate_point(cx, cy - 6, cx, cy, support_angle)
 
         angle = self.aim_angle
         ux = math.cos(angle)
@@ -1427,15 +1449,15 @@ class Turret:
         breech_half_w = 7.0
 
         breech_points = [
-            (cx - ux * breech_half_len + px * breech_half_w, cy - 6 - uy * breech_half_len + py * breech_half_w),
-            (cx + ux * breech_half_len + px * breech_half_w, cy - 6 + uy * breech_half_len + py * breech_half_w),
-            (cx + ux * breech_half_len - px * breech_half_w, cy - 6 + uy * breech_half_len - py * breech_half_w),
-            (cx - ux * breech_half_len - px * breech_half_w, cy - 6 - uy * breech_half_len - py * breech_half_w),
+            (head_center[0] - ux * breech_half_len + px * breech_half_w, head_center[1] - uy * breech_half_len + py * breech_half_w),
+            (head_center[0] + ux * breech_half_len + px * breech_half_w, head_center[1] + uy * breech_half_len + py * breech_half_w),
+            (head_center[0] + ux * breech_half_len - px * breech_half_w, head_center[1] + uy * breech_half_len - py * breech_half_w),
+            (head_center[0] - ux * breech_half_len - px * breech_half_w, head_center[1] - uy * breech_half_len - py * breech_half_w),
         ]
-        barrel_start_x = cx + ux * barrel_back
-        barrel_start_y = cy - 6 + uy * barrel_back
-        barrel_end_x = cx + ux * barrel_len
-        barrel_end_y = cy - 6 + uy * barrel_len
+        barrel_start_x = head_center[0] + ux * barrel_back
+        barrel_start_y = head_center[1] + uy * barrel_back
+        barrel_end_x = head_center[0] + ux * barrel_len
+        barrel_end_y = head_center[1] + uy * barrel_len
         barrel_points = [
             (barrel_start_x + px * barrel_half, barrel_start_y + py * barrel_half),
             (barrel_end_x + px * barrel_half, barrel_end_y + py * barrel_half),
@@ -1444,25 +1466,27 @@ class Turret:
         ]
 
         shadow_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow_surface, (0, 0, 0, 55), pygame.Rect(cx - 28, cy + 12, 56, 16))
+        shadow_rect = pygame.Rect(cx - 28, cy + 12, 56, 16)
+        pygame.draw.ellipse(shadow_surface, (0, 0, 0, 55), shadow_rect)
         screen.blit(shadow_surface, (0, 0))
 
-        pygame.draw.rect(screen, (58, 62, 70), base_rect, border_radius=5)
-        pygame.draw.rect(screen, (92, 98, 110), base_rect.inflate(-6, -6), border_radius=4)
-        pygame.draw.rect(screen, (74, 78, 88), plinth_rect, border_radius=4)
+        pygame.draw.polygon(screen, (58, 62, 70), rotate_rect(base_rect))
+        pygame.draw.polygon(screen, (92, 98, 110), rotate_rect(base_rect.inflate(-6, -6)))
+        pygame.draw.polygon(screen, (74, 78, 88), rotate_rect(plinth_rect))
 
         for x_offset in (-13, 0, 13):
-            pygame.draw.circle(screen, (122, 128, 140), (int(cx + x_offset), int(cy + 11)), 3)
+            bolt = rotate_point(cx + x_offset, cy + 11, cx, cy, support_angle)
+            pygame.draw.circle(screen, (122, 128, 140), (int(bolt[0]), int(bolt[1])), 3)
 
         pygame.draw.polygon(screen, (74, 80, 92), breech_points)
         pygame.draw.polygon(screen, (138, 146, 160), breech_points, 1)
         pygame.draw.polygon(screen, (88, 96, 110), barrel_points)
         pygame.draw.polygon(screen, (160, 170, 186), barrel_points, 1)
 
-        pygame.draw.circle(screen, (66, 72, 82), head_center, 13)
-        pygame.draw.circle(screen, (124, 132, 148), head_center, 13, 2)
-        pygame.draw.circle(screen, (170, 184, 205), head_center, 5)
-        pygame.draw.circle(screen, (255, 120, 90), (int(cx + ux * 6), int(cy - 6 + uy * 6)), 2)
+        pygame.draw.circle(screen, (66, 72, 82), (int(head_center[0]), int(head_center[1])), 13)
+        pygame.draw.circle(screen, (124, 132, 148), (int(head_center[0]), int(head_center[1])), 13, 2)
+        pygame.draw.circle(screen, (170, 184, 205), (int(head_center[0]), int(head_center[1])), 5)
+        pygame.draw.circle(screen, (255, 120, 90), (int(head_center[0] + ux * 6), int(head_center[1] + uy * 6)), 2)
 
 
 class Tank:
@@ -1595,7 +1619,10 @@ class Gate:
     def activate(self):
         self.open_timer = self.open_duration
 
-    def update(self, dt):
+    def update(self, dt, level=None, ship=None):
+        prev_x = self.x
+        prev_y = self.y
+        prev_open_amount = self.open_amount
         if self.open_timer > 0.0:
             self.open_timer = max(0.0, self.open_timer - dt)
         target_amount = 1.0 if self.open_timer > 0.0 else 0.0
@@ -1606,6 +1633,22 @@ class Gate:
             self.open_amount = max(target_amount, self.open_amount - step)
         self.x = self.closed_x + self.slide_dx * self.open_amount
         self.y = self.closed_y + self.slide_dy * self.open_amount
+
+        if (
+            level is not None
+            and ship is not None
+            and ship.is_operational()
+            and ship.can_bounce()
+            and (abs(self.x - prev_x) > 1e-6 or abs(self.y - prev_y) > 1e-6)
+        ):
+            ship_radius = ship.collision_radius()
+            if self.contains_point(ship.x, ship.y, ship_radius, level):
+                pushed_x = level.wrap_x(ship.x + (self.x - prev_x), ship.radius)
+                pushed_y = ship.y + (self.y - prev_y)
+                if ship.terrain_collision_contacts(level, ship_radius, x=pushed_x, y=pushed_y):
+                    self.x = prev_x
+                    self.y = prev_y
+                    self.open_amount = prev_open_amount
 
     def contains_point(self, x, y, radius=0.0, level=None):
         dx = self.x - x
@@ -1663,6 +1706,7 @@ class Switch:
         self.gate_id = gate_id
         self.radius = radius
         self.floor_offset = 18.0
+        self.support_angle = 0.0
         self.flash_time = 0.0
 
     def activate(self, gate):
@@ -1681,8 +1725,8 @@ class Switch:
 
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None, gate=None):
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
-        cx = int(self.x + offset_x - camera_x)
-        cy = int(self.y - camera_y)
+        cx = self.x + offset_x - camera_x
+        cy = self.y - camera_y
         base_rect = pygame.Rect(0, 0, 24, 12)
         base_rect.center = (cx, cy + 12)
         active = gate is not None and gate.open_timer > 0.0
@@ -1700,11 +1744,17 @@ class Switch:
             glow_colour = (255, 112, 70)
             glow_alpha = int(52 + 24 * pulse)
 
-        pygame.draw.rect(screen, (96, 104, 116), base_rect, border_radius=4)
-        pygame.draw.rect(screen, (150, 160, 174), base_rect, 2, border_radius=4)
-        draw_glow_circle(screen, glow_colour, (cx, cy), self.radius - 4, self.radius + 10, glow_alpha)
-        pygame.draw.circle(screen, lens_colour, (cx, cy), self.radius - 4)
-        pygame.draw.circle(screen, (245, 248, 255), (cx, cy), self.radius - 4, 2)
+        base_points = [
+            rotate_point(base_rect.left, base_rect.top, cx, cy, self.support_angle),
+            rotate_point(base_rect.right, base_rect.top, cx, cy, self.support_angle),
+            rotate_point(base_rect.right, base_rect.bottom, cx, cy, self.support_angle),
+            rotate_point(base_rect.left, base_rect.bottom, cx, cy, self.support_angle),
+        ]
+        draw_glow_circle(screen, glow_colour, (int(cx), int(cy)), self.radius - 4, self.radius + 10, glow_alpha)
+        pygame.draw.polygon(screen, (96, 104, 116), base_points)
+        pygame.draw.polygon(screen, (150, 160, 174), base_points, 2)
+        pygame.draw.circle(screen, lens_colour, (int(cx), int(cy)), self.radius - 4)
+        pygame.draw.circle(screen, (245, 248, 255), (int(cx), int(cy)), self.radius - 4, 2)
 
 
 class FuelPod:
@@ -1714,6 +1764,7 @@ class FuelPod:
         self.sprite = sprite
         # Match the pod's tall drawn silhouette more closely so shield contact reads correctly.
         self.radius = max(18, int(max(sprite.get_width(), sprite.get_height()) * 0.46))
+        self.support_angle = 0.0
         self.hit_points = 2
         self.destroyed = False
         self.fuel_remaining = FUEL_POD_AMOUNT
@@ -1799,19 +1850,27 @@ class FuelPod:
             fill_colour = (90, 255, 180, 110) if self.hit_points > 1 else (70, 170, 130, 88)
             pygame.draw.rect(fill_surface, fill_colour, fill_rect, border_radius=5)
             screen.blit(fill_surface, rect)
-        screen.blit(self.sprite, rect)
+        sprite_image = self.sprite
+        if abs(self.support_angle) > 1e-4:
+            sprite_image = pygame.transform.rotate(self.sprite, -math.degrees(self.support_angle))
+        sprite_rect = sprite_image.get_rect(center=(center_x, center_y))
+        screen.blit(sprite_image, sprite_rect)
         if self.hit_points == 1:
             damage_surface = pygame.Surface(self.sprite.get_size(), pygame.SRCALPHA)
             pygame.draw.rect(damage_surface, (28, 34, 32, 96), damage_surface.get_rect(), border_radius=7)
             pygame.draw.line(damage_surface, (255, 232, 210, 190), (12, 14), (24, 28), 2)
             pygame.draw.line(damage_surface, (255, 232, 210, 170), (24, 28), (18, 42), 2)
             pygame.draw.line(damage_surface, (255, 232, 210, 150), (22, 20), (30, 34), 1)
-            screen.blit(damage_surface, rect, special_flags=pygame.BLEND_ALPHA_SDL2)
+            if abs(self.support_angle) > 1e-4:
+                damage_surface = pygame.transform.rotate(damage_surface, -math.degrees(self.support_angle))
+            screen.blit(damage_surface, damage_surface.get_rect(center=(center_x, center_y)), special_flags=pygame.BLEND_ALPHA_SDL2)
         if self.flash_time > 0.0:
             flash_alpha = int(220 * (self.flash_time / 0.20))
             flash_surface = pygame.Surface(self.sprite.get_size(), pygame.SRCALPHA)
             pygame.draw.rect(flash_surface, (255, 252, 210, flash_alpha), flash_surface.get_rect(), border_radius=7)
-            screen.blit(flash_surface, rect, special_flags=pygame.BLEND_ALPHA_SDL2)
+            if abs(self.support_angle) > 1e-4:
+                flash_surface = pygame.transform.rotate(flash_surface, -math.degrees(self.support_angle))
+            screen.blit(flash_surface, flash_surface.get_rect(center=(center_x, center_y)), special_flags=pygame.BLEND_ALPHA_SDL2)
 
 
 class FuelTransferParticle:
@@ -1873,6 +1932,7 @@ class Orb:
         self.y = y
         self.sprite = sprite
         self.radius = sprite.get_width() * 0.5
+        self.support_angle = 0.0
         self.plinth_x = x
         self.plinth_y = y
         self.plinth_half_width = 27.0
@@ -2058,23 +2118,36 @@ class Orb:
             foot_fill = (104, 108, 116)
             foot_outline = (156, 160, 168)
         if self.plinth_alive:
-            pygame.draw.rect(screen, body_fill, body_rect, border_radius=6)
-            pygame.draw.rect(screen, body_outline, body_rect, 2, border_radius=6)
-            pygame.draw.ellipse(screen, cap_fill, cap_rect)
-            pygame.draw.ellipse(screen, cap_outline, cap_rect, 2)
-            cradle_rect = cap_rect.inflate(-10, -1)
-            pygame.draw.arc(screen, cradle_colour, cradle_rect, math.pi, math.tau, 3)
-            lip_rect = cap_rect.inflate(-16, -8)
-            pygame.draw.arc(screen, lip_colour, lip_rect, math.pi, math.tau, 2)
-            pygame.draw.rect(screen, foot_fill, foot_rect, border_radius=4)
-            pygame.draw.rect(screen, foot_outline, foot_rect, 2, border_radius=4)
+            plinth_surface = pygame.Surface((96, 80), pygame.SRCALPHA)
+            local_cx = plinth_surface.get_width() // 2
+            local_floor_y = 66
+            local_top_y = local_floor_y - 34
+            local_body_rect = pygame.Rect(0, 0, 30, max(14, local_floor_y - local_top_y))
+            local_body_rect.midtop = (local_cx, local_top_y)
+            local_cap_rect = pygame.Rect(0, 0, 54, 16)
+            local_cap_rect.midbottom = (local_cx, local_top_y + 6)
+            local_foot_rect = pygame.Rect(0, 0, 42, 10)
+            local_foot_rect.midbottom = (local_cx, local_floor_y)
+            pygame.draw.rect(plinth_surface, body_fill, local_body_rect, border_radius=6)
+            pygame.draw.rect(plinth_surface, body_outline, local_body_rect, 2, border_radius=6)
+            pygame.draw.ellipse(plinth_surface, cap_fill, local_cap_rect)
+            pygame.draw.ellipse(plinth_surface, cap_outline, local_cap_rect, 2)
+            cradle_rect = local_cap_rect.inflate(-10, -1)
+            pygame.draw.arc(plinth_surface, cradle_colour, cradle_rect, math.pi, math.tau, 3)
+            lip_rect = local_cap_rect.inflate(-16, -8)
+            pygame.draw.arc(plinth_surface, lip_colour, lip_rect, math.pi, math.tau, 2)
+            pygame.draw.rect(plinth_surface, foot_fill, local_foot_rect, border_radius=4)
+            pygame.draw.rect(plinth_surface, foot_outline, local_foot_rect, 2, border_radius=4)
             if self.plinth_flash_time > 0.0:
                 flash_alpha = int(220 * (self.plinth_flash_time / 0.20))
-                flash_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-                pygame.draw.rect(flash_surface, (255, 248, 210, flash_alpha), body_rect, border_radius=6)
-                pygame.draw.ellipse(flash_surface, (255, 252, 220, flash_alpha), cap_rect)
-                pygame.draw.rect(flash_surface, (255, 244, 200, flash_alpha), foot_rect, border_radius=4)
-                screen.blit(flash_surface, (0, 0))
+                flash_surface = pygame.Surface(plinth_surface.get_size(), pygame.SRCALPHA)
+                pygame.draw.rect(flash_surface, (255, 248, 210, flash_alpha), local_body_rect, border_radius=6)
+                pygame.draw.ellipse(flash_surface, (255, 252, 220, flash_alpha), local_cap_rect)
+                pygame.draw.rect(flash_surface, (255, 244, 200, flash_alpha), local_foot_rect, border_radius=4)
+                plinth_surface.blit(flash_surface, (0, 0))
+            if abs(self.support_angle) > 1e-4:
+                plinth_surface = pygame.transform.rotate(plinth_surface, -math.degrees(self.support_angle))
+            screen.blit(plinth_surface, plinth_surface.get_rect(center=(plinth_cx, plinth_base_y - 20)))
         else:
             rubble_rect = pygame.Rect(0, 0, 40, 10)
             rubble_rect.midbottom = (plinth_cx, plinth_base_y)
@@ -2096,6 +2169,7 @@ class Reactor:
         self.y = y
         self.sprite = sprite
         self.radius = max(sprite.get_width(), sprite.get_height()) * 0.34
+        self.support_angle = 0.0
         self.hit_points = REACTOR_HIT_POINTS
         self.alive = True
 
@@ -2117,8 +2191,11 @@ class Reactor:
     def draw(self, screen, camera_x=0.0, camera_y=0.0, level=None):
         offset_x = level.draw_world_offset(self.x, camera_x) if level else 0.0
         if self.alive:
-            rect = self.sprite.get_rect(center=(self.x + offset_x - camera_x, self.y - camera_y))
-            screen.blit(self.sprite, rect)
+            image = self.sprite
+            if abs(self.support_angle) > 1e-4:
+                image = pygame.transform.rotate(self.sprite, -math.degrees(self.support_angle))
+            rect = image.get_rect(center=(self.x + offset_x - camera_x, self.y - camera_y))
+            screen.blit(image, rect)
 
 
 class Rock:
@@ -2366,9 +2443,38 @@ class Level:
 
         return rocks
 
+    def authored_support_angle(self, x, y):
+        best_line = None
+        best_dist = float("inf")
+        for line in self.authored_lines:
+            (ax, ay), (bx, by) = line
+            cx, cy = closest_point_on_segment(x, y, ax, ay, bx, by)
+            dist = math.hypot(x - cx, y - cy)
+            if dist < best_dist:
+                best_dist = dist
+                best_line = line
+        if best_line is None:
+            return 0.0
+        (ax, ay), (bx, by) = best_line
+        angle = math.atan2(by - ay, bx - ax)
+        if angle > math.pi * 0.5:
+            angle -= math.pi
+        elif angle < -math.pi * 0.5:
+            angle += math.pi
+        return angle
+
     def initialize_authored_object_positions(self):
         """Respect authored level coordinates instead of re-snapping objects on load."""
+        for turret in self.turrets:
+            turret.support_angle = self.authored_support_angle(turret.x, turret.y)
+        for fuel_pod in self.fuel_pods:
+            fuel_pod.support_angle = self.authored_support_angle(fuel_pod.x, fuel_pod.y)
+        for switch in self.switches:
+            switch.support_angle = self.authored_support_angle(switch.x, switch.y)
+        if self.reactor:
+            self.reactor.support_angle = self.authored_support_angle(self.reactor.x, self.reactor.y)
         if self.orb:
+            self.orb.support_angle = self.authored_support_angle(self.orb.x, self.orb.y)
             # Level files store the orb's visible position. The plinth anchor sits below it.
             self.orb.plinth_x = self.orb.x
             self.orb.plinth_y = self.orb.y + 34.0
@@ -2844,9 +2950,9 @@ class Level:
             return True
         return False
 
-    def update(self, dt):
+    def update(self, dt, ship=None):
         for gate in self.gates:
-            gate.update(dt)
+            gate.update(dt, self, ship)
         for switch in self.switches:
             switch.update(dt)
         if not self.rocks_unlocked:
@@ -3751,7 +3857,20 @@ class Game:
                 if not solid.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
                     continue
                 dx = self.level.wrapped_dx(solid.x, self.ship.x)
+                if kind == "gate":
+                    self.destroy_ship()
+                    return True
                 self.ship_collision_response(dx, self.ship.y - solid.y, other_radius=solid.radius)
+                return True
+        return False
+
+    def handle_gate_ship_contact(self):
+        if not self.ship.is_operational():
+            return False
+        ship_collision_radius = self.ship.collision_radius()
+        for gate in self.level.nearby_solids(self.ship.x, self.ship.y, ship_collision_radius, kinds=("gate",)).get("gate", ()):
+            if gate.contains_point(self.ship.x, self.ship.y, ship_collision_radius, self.level):
+                self.destroy_ship()
                 return True
         return False
 
@@ -3933,7 +4052,9 @@ class Game:
         if self.game_won or self.paused:
             return
 
-        self.level.update(dt)
+        self.level.update(dt, self.ship)
+        if self.handle_gate_ship_contact():
+            return
 
         if self.ship and self.ship.alive and self.ship.update_transporter(dt):
             if self.pending_orbit_exit_action == "advance":
@@ -4136,12 +4257,6 @@ class Game:
             self.screen.blit(timer_text, (10, 160))
             orbit_text = self.font.render("Reactor critical - climb to orbit to escape", True, (120, 255, 120))
             self.screen.blit(orbit_text, (10, 190))
-        elif not self.level_destroyed:
-            orbit_text = self.font.render("Orbit before reactor breach causes a free respawn", True, (180, 220, 255))
-            self.screen.blit(orbit_text, (10, 160))
-            shield_key = format_key_binding(self.controls["tractor"])
-            shield_text = self.font.render(f"{shield_key}: tractor beam + force field", True, (140, 245, 225))
-            self.screen.blit(shield_text, (10, 190))
 
         if self.level_destroyed:
             msg = self.font.render("LEVEL SELF-DESTRUCTED", True, (255, 90, 60))

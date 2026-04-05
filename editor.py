@@ -504,7 +504,8 @@ class LevelEditor:
         hit = self.vertical_surface_below(world_pos)
         if hit is None:
             return world_pos
-        (ax, ay), (bx, by) = hit[0]
+        points = line_points(hit[0])
+        (ax, ay), (bx, by) = points
         contact_x, contact_y = hit[1]
         seg_dx = bx - ax
         seg_dy = by - ay
